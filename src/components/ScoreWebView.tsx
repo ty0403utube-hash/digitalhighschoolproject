@@ -1,0 +1,180 @@
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { WebView } from "react-native-webview";
+import { OSMD_BUNDLE_BASE64_CHUNKS } from "../webview/osmdBundleBase64";
+import { createOsmdPracticeHtml } from "../webview/osmdPracticeHtml";
+
+export type ScoreWebViewHandle = {
+  setNoteColor: (index: number, color: string) => void;
+  setNoteProgress: (index: number, progress: number) => void;
+  scrollScorePage: (direction: "prev" | "next") => void;
+  startMic: () => void;
+  resetScore: () => void;
+};
+
+type Props = {
+  musicXml: string;
+  layoutMode: "page" | "flow";
+  measureFrom: number;
+  measureTo: number;
+  noteIndexOffset: number;
+  useLowestChordNoteOnly: boolean;
+  onPitch: (payload: { hz: number; clarity: number }) => void;
+  onFftPitchClasses: (payload: { pitchClasses: number[]; peaks: Array<{ hz: number; db: number }> }) => void;
+  onScoreReady: (payload?: {
+    noteCount?: number;
+    height?: number;
+    svgCount?: number;
+    measureCount?: number;
+    measureFrom?: number;
+    measureTo?: number;
+    renderMode?: string;
+    bodyScrollHeight?: number;
+    documentScrollHeight?: number;
+  }) => void;
+  onScoreError: (message: string) => void;
+  onNoteMapWarning: (message: string) => void;
+  onScrollInfo: (payload: { page: number; totalPages: number }) => void;
+  onMicReady: () => void;
+  onMicUnavailable: (message: string) => void;
+};
+
+export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
+  (
+    {
+      musicXml,
+      layoutMode,
+      measureFrom,
+      measureTo,
+      noteIndexOffset,
+      useLowestChordNoteOnly,
+      onPitch,
+      onFftPitchClasses,
+      onScoreReady,
+      onScoreError,
+      onNoteMapWarning,
+      onScrollInfo,
+      onMicReady,
+      onMicUnavailable,
+    },
+    ref
+  ) => {
+    const webViewRef = useRef<WebView>(null);
+    const webViewReadyRef = useRef(false);
+
+    const html = useMemo(
+      () =>
+        createOsmdPracticeHtml(
+          `data:application/javascript;base64,${OSMD_BUNDLE_BASE64_CHUNKS.join("")}`
+        ),
+      []
+    );
+
+    const send = (type: string, payload?: unknown) => {
+      webViewRef.current?.postMessage(JSON.stringify({ type, payload }));
+    };
+
+    useEffect(() => {
+      if (webViewReadyRef.current) {
+        send("LOAD_SCORE", {
+          musicXml,
+          layoutMode,
+          measureFrom,
+          measureTo,
+          noteIndexOffset,
+          useLowestChordNoteOnly,
+        });
+      }
+    }, [musicXml, layoutMode, measureFrom, measureTo, noteIndexOffset, useLowestChordNoteOnly]);
+
+    useImperativeHandle(ref, () => ({
+      setNoteColor(index: number, color: string) {
+        send("SET_NOTE_COLOR", { index, color });
+      },
+      setNoteProgress(index: number, progress: number) {
+        send("SET_NOTE_PROGRESS", { index, progress });
+      },
+      scrollScorePage(direction: "prev" | "next") {
+        send("SCROLL_SCORE_PAGE", { direction });
+      },
+      startMic() {
+        send("START_MIC");
+      },
+      resetScore() {
+        send("RESET_SCORE");
+      },
+    }));
+
+    return (
+      <WebView
+        ref={webViewRef}
+        originWhitelist={["*"]}
+        source={{ html, baseUrl: "https://localhost/" }}
+        javaScriptEnabled
+        domStorageEnabled
+        scrollEnabled
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+        showsHorizontalScrollIndicator
+        mediaPlaybackRequiresUserAction={false}
+        mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
+        allowsInlineMediaPlayback
+        onMessage={(event) => {
+          let msg: any;
+
+          try {
+            msg = JSON.parse(event.nativeEvent.data);
+          } catch {
+            onScoreError("Ignored invalid WebView message.");
+            return;
+          }
+
+          if (msg.type === "READY") {
+            webViewReadyRef.current = true;
+            send("LOAD_SCORE", {
+              musicXml,
+              layoutMode,
+              measureFrom,
+              measureTo,
+              noteIndexOffset,
+              useLowestChordNoteOnly,
+            });
+          }
+
+          if (msg.type === "SCORE_RENDERED") {
+            onScoreReady(msg.payload);
+          }
+
+          if (msg.type === "ERROR") {
+            onScoreError(msg.payload?.message ?? "Score render failed.");
+          }
+
+          if (msg.type === "NOTE_MAP_WARNING") {
+            onNoteMapWarning(msg.payload?.message ?? "Could not map rendered notes.");
+          }
+
+          if (msg.type === "SCROLL_INFO") {
+            onScrollInfo(msg.payload);
+          }
+
+          if (msg.type === "PITCH") {
+            onPitch(msg.payload);
+          }
+
+          if (msg.type === "FFT_PITCH_CLASSES") {
+            onFftPitchClasses(msg.payload);
+          }
+
+          if (msg.type === "MIC_READY") {
+            onMicReady();
+          }
+
+          if (msg.type === "MIC_UNAVAILABLE") {
+            onMicUnavailable(msg.payload?.message ?? "Microphone is unavailable.");
+          }
+        }}
+      />
+    );
+  }
+);
+
+ScoreWebView.displayName = "ScoreWebView";
