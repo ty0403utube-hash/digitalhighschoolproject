@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   AudioModule,
   getRecordingPermissionsAsync,
@@ -16,6 +15,7 @@ import {
   savePracticeSession,
 } from "./src/db/practiceRepository";
 import { initDb } from "./src/db/sqlite";
+import { getSavedSong, getSavedSongs, saveSong, SavedSong } from "./src/db/songRepository";
 import { pickMusicXmlFile } from "./src/musicxml/filePicker";
 import { parseMusicXml } from "./src/musicxml/parseMusicXml";
 import { midiToHz } from "./src/musicxml/pitch";
@@ -23,10 +23,7 @@ import { comparePitch } from "./src/practice/comparePitch";
 import { SAMPLE_MUSIC_XML } from "./src/sample/sampleMusicXml";
 import { PracticeMistakeDraft } from "./src/types/practice";
 
-type AppSection = "home" | "play" | "focus" | "achievement";
-
-const SAVED_SCORE_XML_KEY = "guitarPractice.savedScore.xml";
-const SAVED_SCORE_TITLE_KEY = "guitarPractice.savedScore.title";
+type AppSection = "home" | "library" | "play" | "focus" | "achievement";
 
 export default function App() {
   const SAME_BEAT_MS = 80;
@@ -67,6 +64,7 @@ export default function App() {
   const [focusMeasures, setFocusMeasures] = useState<FocusMeasure[]>([]);
   const [resultSummary, setResultSummary] = useState("No saved result yet");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
+  const [savedSongs, setSavedSongs] = useState<SavedSong[]>([]);
   const songId = useMemo(() => createSongId(songTitle), [songTitle]);
   const startMicLabel = countdown
     ? `Start in ${countdown}`
@@ -102,6 +100,7 @@ export default function App() {
 
   useEffect(() => {
     initDb();
+    refreshSavedSongs();
     refreshPracticeInsights(songId);
     return () => {
       stopRenderTimeout();
@@ -111,10 +110,6 @@ export default function App() {
       stopPitchWatchdog();
     };
   }, [songId]);
-
-  useEffect(() => {
-    restoreSavedScore();
-  }, []);
 
   useEffect(() => {
     if (activeSection !== "play") {
@@ -231,29 +226,33 @@ export default function App() {
     }
 
     await loadMusicXml(picked.xml, picked.name.replace(/\.(mxl|musicxml|xml)$/i, ""));
+    setActiveSection("play");
   }
 
-  async function restoreSavedScore() {
+  function refreshSavedSongs() {
     try {
-      const [[, savedXml], [, savedTitle]] = await AsyncStorage.multiGet([
-        SAVED_SCORE_XML_KEY,
-        SAVED_SCORE_TITLE_KEY,
-      ]);
-
-      if (!savedXml) return;
-
-      await loadMusicXml(savedXml, savedTitle || "Saved Score", false);
-      setScoreStatus("Saved score loaded");
+      setSavedSongs(getSavedSongs());
     } catch {
-      setScoreStatus("Could not load saved score");
+      setSavedSongs([]);
     }
   }
 
-  async function saveImportedScore(xml: string, title: string) {
-    await AsyncStorage.multiSet([
-      [SAVED_SCORE_XML_KEY, xml],
-      [SAVED_SCORE_TITLE_KEY, title],
-    ]);
+  async function openSavedSong(id: string) {
+    const savedSong = getSavedSong(id);
+
+    if (!savedSong) {
+      Alert.alert("Song not found", "This song is no longer saved on this device.");
+      refreshSavedSongs();
+      return;
+    }
+
+    await loadMusicXml(savedSong.xmlContent, savedSong.title, false);
+    setActiveSection("play");
+  }
+
+  async function practiceSampleScore() {
+    await loadMusicXml(SAMPLE_MUSIC_XML, "Mixed Rhythm Guitar Test", false);
+    setActiveSection("play");
   }
 
   async function loadMusicXml(xml: string, title: string, shouldSave = true) {
@@ -287,7 +286,12 @@ export default function App() {
 
     if (shouldSave) {
       try {
-        await saveImportedScore(trimmedXml, nextTitle);
+        saveSong({
+          id: createSongId(nextTitle),
+          title: nextTitle,
+          xmlContent: trimmedXml,
+        });
+        refreshSavedSongs();
         setScoreStatus("Score saved on this device");
       } catch {
         Alert.alert(
@@ -432,10 +436,6 @@ export default function App() {
     }, 1000);
   }
 
-  function getTimingGraceMs(durationMs: number) {
-    return Math.min(1800, Math.max(1000, durationMs * 1.0));
-  }
-
   function beginCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
@@ -453,7 +453,7 @@ export default function App() {
       const progress = elapsed / activeNote.durationMs;
       scoreRef.current?.setNoteProgress(activeNote.index, progress);
 
-      if (elapsed >= activeNote.durationMs + getTimingGraceMs(activeNote.durationMs)) {
+      if (elapsed >= activeNote.durationMs) {
         if (matchedRef.current) {
           passCurrentNote();
         } else {
@@ -489,11 +489,16 @@ export default function App() {
     setCurrentIndex(nextIndex);
     setAnalysisStatus("Matched");
 
+    const nextNote = notes[nextIndex];
+    const restDelayMs = nextNote
+      ? Math.max(0, nextNote.startMs - note.startMs - note.durationMs)
+      : 0;
+
     setTimeout(() => {
       if (isListeningRef.current) {
         beginCurrentNote();
       }
-    }, 120);
+    }, restDelayMs);
   }
 
   function failCurrentNote() {
@@ -730,12 +735,17 @@ export default function App() {
         </View>
 
         <View style={styles.categoryList}>
-          <Pressable style={styles.categoryButton} onPress={() => setActiveSection("play")}>
+          <Pressable style={styles.categoryButton} onPress={() => setActiveSection("library")}>
             <Text style={styles.categoryNumber}>1</Text>
             <View style={styles.categoryTextBlock}>
               <Text style={styles.categoryTitle}>연주하기</Text>
-              <Text style={styles.categorySubtitle}>악보를 보고 바로 연습합니다</Text>
+              <Text style={styles.categorySubtitle}>저장한 악보를 보고 바로 연습합니다</Text>
             </View>
+          </Pressable>
+
+          <Pressable style={styles.samplePracticeButton} onPress={practiceSampleScore}>
+            <Text style={styles.samplePracticeTitle}>테스트 파일 연습하기</Text>
+            <Text style={styles.samplePracticeSubtitle}>기본 리듬 테스트 악보로 연습합니다</Text>
           </Pressable>
 
           <Pressable style={styles.categoryButton} onPress={() => setActiveSection("focus")}>
@@ -754,6 +764,49 @@ export default function App() {
             </View>
           </Pressable>
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (activeSection === "library") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>연주할 곡 선택</Text>
+            <Text style={styles.subtitle}>{savedSongs.length} saved songs</Text>
+          </View>
+          <Pressable style={styles.importButton} onPress={importMusicXml}>
+            <Text style={styles.importButtonText}>Import</Text>
+          </Pressable>
+        </View>
+
+        <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
+          {savedSongs.length ? (
+            savedSongs.map((song) => (
+              <Pressable
+                key={song.id}
+                style={styles.songButton}
+                onPress={() => openSavedSong(song.id)}
+              >
+                <Text style={styles.songTitle}>{song.title}</Text>
+                <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
+              </Pressable>
+            ))
+          ) : (
+            <Text style={styles.placeholderText}>
+              아직 저장된 곡이 없습니다. Import로 MusicXML 파일을 추가하세요.
+            </Text>
+          )}
+
+          <Pressable style={styles.samplePracticeButton} onPress={practiceSampleScore}>
+            <Text style={styles.samplePracticeTitle}>테스트 파일 연습하기</Text>
+            <Text style={styles.samplePracticeSubtitle}>기본 리듬 테스트 악보로 연습합니다</Text>
+          </Pressable>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -826,6 +879,9 @@ export default function App() {
         </View>
         <Pressable style={styles.importButton} onPress={importMusicXml}>
           <Text style={styles.importButtonText}>Import</Text>
+        </Pressable>
+        <Pressable style={styles.sampleButton} onPress={practiceSampleScore}>
+          <Text style={styles.sampleButtonText}>Test</Text>
         </Pressable>
       </View>
 
@@ -1071,6 +1127,27 @@ const styles = StyleSheet.create({
     color: "#66736b",
     fontWeight: "700",
   },
+  samplePracticeButton: {
+    minHeight: 76,
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    justifyContent: "center",
+    backgroundColor: "#2f5f8f",
+    borderWidth: 1,
+    borderColor: "#254c73",
+  },
+  samplePracticeTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  samplePracticeSubtitle: {
+    marginTop: 5,
+    color: "#dfeaf5",
+    fontSize: 13,
+    fontWeight: "700",
+  },
   header: {
     paddingHorizontal: 18,
     paddingTop: 14,
@@ -1121,6 +1198,21 @@ const styles = StyleSheet.create({
     borderColor: "#185846",
   },
   importButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  sampleButton: {
+    minHeight: 44,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2f5f8f",
+    borderWidth: 1,
+    borderColor: "#254c73",
+  },
+  sampleButtonText: {
     color: "#ffffff",
     fontSize: 15,
     fontWeight: "800",
@@ -1187,6 +1279,27 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 15,
     fontWeight: "900",
+  },
+  songButton: {
+    minHeight: 72,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+  },
+  songTitle: {
+    color: "#1f2a25",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  songMeta: {
+    marginTop: 5,
+    color: "#66736b",
+    fontSize: 12,
+    fontWeight: "700",
   },
   toolbar: {
     flexDirection: "row",
