@@ -12,10 +12,18 @@ import {
   FocusMeasure,
   getFocusMeasuresForSong,
   getLatestSessionForSong,
+  getSessionsForSong,
   savePracticeSession,
+  SongPracticeSessionSummary,
 } from "./src/db/practiceRepository";
 import { initDb } from "./src/db/sqlite";
-import { getSavedSong, getSavedSongs, saveSong, SavedSong } from "./src/db/songRepository";
+import {
+  deleteSavedSong,
+  getSavedSong,
+  getSavedSongs,
+  saveSong,
+  SavedSong,
+} from "./src/db/songRepository";
 import { pickMusicXmlFile } from "./src/musicxml/filePicker";
 import { parseMusicXml } from "./src/musicxml/parseMusicXml";
 import { midiToHz } from "./src/musicxml/pitch";
@@ -23,7 +31,7 @@ import { comparePitch } from "./src/practice/comparePitch";
 import { SAMPLE_MUSIC_XML } from "./src/sample/sampleMusicXml";
 import { PracticeMistakeDraft } from "./src/types/practice";
 
-type AppSection = "home" | "library" | "play" | "focus" | "achievement";
+type AppSection = "home" | "library" | "play" | "focus" | "weakScore" | "achievement";
 
 export default function App() {
   const SAME_BEAT_MS = 80;
@@ -63,8 +71,11 @@ export default function App() {
   const [analysisStatus, setAnalysisStatus] = useState("Mic idle");
   const [focusMeasures, setFocusMeasures] = useState<FocusMeasure[]>([]);
   const [resultSummary, setResultSummary] = useState("No saved result yet");
+  const [achievementSessions, setAchievementSessions] = useState<SongPracticeSessionSummary[]>([]);
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [savedSongs, setSavedSongs] = useState<SavedSong[]>([]);
+  const [pendingFocusMeasure, setPendingFocusMeasure] = useState<number | null>(null);
+  const [scoreViewVersion, setScoreViewVersion] = useState(0);
   const songId = useMemo(() => createSongId(songTitle), [songTitle]);
   const startMicLabel = countdown
     ? `Start in ${countdown}`
@@ -112,7 +123,7 @@ export default function App() {
   }, [songId]);
 
   useEffect(() => {
-    if (activeSection !== "play") {
+    if (activeSection !== "play" && activeSection !== "weakScore") {
       stopRenderTimeout();
       return;
     }
@@ -121,6 +132,30 @@ export default function App() {
     setScoreTotalPages(totalMeasurePages);
     startRenderTimeout();
   }, [activeSection, musicXml, layoutMode, scorePage, totalMeasurePages]);
+
+  useEffect(() => {
+    if (
+      (activeSection !== "play" && activeSection !== "weakScore") ||
+      pendingFocusMeasure === null
+    ) {
+      return;
+    }
+
+    const page = Math.max(1, Math.ceil(pendingFocusMeasure / measuresPerPage));
+    const boundedPage = Math.max(1, Math.min(totalMeasurePages, page));
+    const firstIndex = notes.findIndex((note) => note.measure >= pendingFocusMeasure);
+
+    setScorePage(boundedPage);
+    if (firstIndex >= 0) {
+      currentIndexRef.current = firstIndex;
+      setCurrentIndex(firstIndex);
+    }
+    setAnalysisStatus(`Weak measure ${pendingFocusMeasure}`);
+    setIsListening(false);
+    setMicStarting(false);
+    setScoreStatus("Rendering weak measure...");
+    setPendingFocusMeasure(null);
+  }, [activeSection, pendingFocusMeasure, notes, totalMeasurePages]);
 
   useEffect(() => {
     setScorePage(1);
@@ -250,9 +285,127 @@ export default function App() {
     setActiveSection("play");
   }
 
+  function confirmDeleteSong(song: SavedSong) {
+    Alert.alert("Delete song", `Delete "${song.title}" from this device?`, [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          deleteSavedSong(song.id);
+          refreshSavedSongs();
+
+          if (createSongId(songTitle) === song.id) {
+            setSongTitle("Sample Melody");
+            setMusicXml(SAMPLE_MUSIC_XML);
+            setCurrentIndex(0);
+            setResultSummary("No saved result yet");
+            setAnalysisStatus("Mic idle");
+            setIsListening(false);
+            setMicStarting(false);
+          }
+        },
+      },
+    ]);
+  }
+
   async function practiceSampleScore() {
     await loadMusicXml(SAMPLE_MUSIC_XML, "Mixed Rhythm Guitar Test", false);
     setActiveSection("play");
+  }
+
+  async function createDemoFocusResult() {
+    const demoTitle = "Mixed Rhythm Guitar Test";
+    const demoSongId = createSongId(demoTitle);
+    const demoNotes = parseMusicXml(SAMPLE_MUSIC_XML, false);
+    const weakNotes = [
+      ...demoNotes.filter((note) => note.measure === 6).slice(0, 3),
+      ...demoNotes.filter((note) => note.measure === 3).slice(0, 1),
+    ];
+    const mistakes: PracticeMistakeDraft[] = weakNotes.map((note) => ({
+      songId: demoSongId,
+      measure: note.measure,
+      noteIndex: note.index,
+      expectedMidi: note.midi,
+      playedMidi: null,
+      reason: "timeout",
+    }));
+    const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
+
+    saveSong({
+      id: demoSongId,
+      title: demoTitle,
+      xmlContent: SAMPLE_MUSIC_XML,
+    });
+    savePracticeSession({
+      songId: demoSongId,
+      totalNotes: demoNotes.length,
+      mistakes,
+      wrongMeasureCount,
+      wrongNoteCount: mistakes.length,
+      isMastered: wrongMeasureCount <= 3,
+    });
+
+    refreshSavedSongs();
+    await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
+    refreshPracticeInsights(demoSongId);
+    setResultSummary(
+      `MASTER - wrong measures ${wrongMeasureCount}, wrong notes ${mistakes.length}`
+    );
+    setPendingFocusMeasure(6);
+    setScoreViewVersion((version) => version + 1);
+    setActiveSection("weakScore");
+  }
+
+  async function createDemoAchievementResult() {
+    const demoTitle = "Mixed Rhythm Guitar Test";
+    const demoSongId = createSongId(demoTitle);
+    const demoNotes = parseMusicXml(SAMPLE_MUSIC_XML, false);
+
+    const makeMistakes = (measureNumbers: number[]) =>
+      measureNumbers
+        .map((measure) => demoNotes.find((note) => note.measure === measure))
+        .filter((note): note is NonNullable<(typeof demoNotes)[number]> => Boolean(note))
+        .map((note) => ({
+          songId: demoSongId,
+          measure: note.measure,
+          noteIndex: note.index,
+          expectedMidi: note.midi,
+          playedMidi: null,
+          reason: "timeout" as const,
+        }));
+
+    const demoSessions = [
+      makeMistakes([2, 3, 4, 5, 6]),
+      makeMistakes([3, 5, 6, 7]),
+      makeMistakes([3, 6]),
+    ];
+
+    saveSong({
+      id: demoSongId,
+      title: demoTitle,
+      xmlContent: SAMPLE_MUSIC_XML,
+    });
+
+    for (const mistakes of demoSessions) {
+      const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
+      savePracticeSession({
+        songId: demoSongId,
+        totalNotes: demoNotes.length,
+        mistakes,
+        wrongMeasureCount,
+        wrongNoteCount: mistakes.length,
+        isMastered: wrongMeasureCount <= 3,
+      });
+    }
+
+    refreshSavedSongs();
+    await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
+    refreshPracticeInsights(demoSongId);
+    setActiveSection("achievement");
   }
 
   async function loadMusicXml(xml: string, title: string, shouldSave = true) {
@@ -453,7 +606,12 @@ export default function App() {
       const progress = elapsed / activeNote.durationMs;
       scoreRef.current?.setNoteProgress(activeNote.index, progress);
 
-      if (elapsed >= activeNote.durationMs) {
+      if (matchedRef.current && elapsed >= activeNote.durationMs) {
+        passCurrentNote();
+        return;
+      }
+
+      if (!matchedRef.current && elapsed >= activeNote.durationMs + getMissGraceMs(activeNote.durationMs)) {
         if (matchedRef.current) {
           passCurrentNote();
         } else {
@@ -461,6 +619,10 @@ export default function App() {
         }
       }
     }, 50);
+  }
+
+  function getMissGraceMs(durationMs: number) {
+    return Math.min(900, Math.max(250, durationMs * 0.45));
   }
 
   function passCurrentNote() {
@@ -661,8 +823,10 @@ export default function App() {
       } else {
         setResultSummary("No saved result yet");
       }
+      setAchievementSessions(getSessionsForSong(nextSongId, 8));
     } catch {
       setFocusMeasures([]);
+      setAchievementSessions([]);
     }
   }
 
@@ -726,6 +890,18 @@ export default function App() {
     setMicStarting(false);
   }
 
+  function openWeakMeasureOnScore(measure: number) {
+    setPendingFocusMeasure(measure);
+    setScoreViewVersion((version) => version + 1);
+    setActiveSection("weakScore");
+  }
+
+  function markWeakMeasureOnScore(measure: number) {
+    for (const note of notes.filter((candidate) => candidate.measure === measure)) {
+      scoreRef.current?.setNoteColor(note.index, "#e53935");
+    }
+  }
+
   if (activeSection === "home") {
     return (
       <SafeAreaView style={styles.root}>
@@ -763,6 +939,21 @@ export default function App() {
               <Text style={styles.categorySubtitle}>최근 연습 결과를 확인합니다</Text>
             </View>
           </Pressable>
+          <Pressable style={styles.categoryButton} onPress={createDemoFocusResult}>
+            <Text style={styles.categoryNumber}>4</Text>
+            <View style={styles.categoryTextBlock}>
+              <Text style={styles.categoryTitle}>테스트 결과 만들기</Text>
+              <Text style={styles.categorySubtitle}>6마디를 취약 구간으로 저장합니다</Text>
+            </View>
+          </Pressable>
+
+          <Pressable style={styles.categoryButton} onPress={createDemoAchievementResult}>
+            <Text style={styles.categoryNumber}>5</Text>
+            <View style={styles.categoryTextBlock}>
+              <Text style={styles.categoryTitle}>성취도 테스트 만들기</Text>
+              <Text style={styles.categorySubtitle}>가짜 연습 기록 3개를 저장합니다</Text>
+            </View>
+          </Pressable>
         </View>
       </SafeAreaView>
     );
@@ -787,14 +978,15 @@ export default function App() {
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           {savedSongs.length ? (
             savedSongs.map((song) => (
-              <Pressable
-                key={song.id}
-                style={styles.songButton}
-                onPress={() => openSavedSong(song.id)}
-              >
-                <Text style={styles.songTitle}>{song.title}</Text>
-                <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
-              </Pressable>
+              <View key={song.id} style={styles.songRow}>
+                <Pressable style={styles.songButton} onPress={() => openSavedSong(song.id)}>
+                  <Text style={styles.songTitle}>{song.title}</Text>
+                  <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
+                </Pressable>
+                <Pressable style={styles.deleteSongButton} onPress={() => confirmDeleteSong(song)}>
+                  <Text style={styles.deleteSongButtonText}>Delete</Text>
+                </Pressable>
+              </View>
             ))
           ) : (
             <Text style={styles.placeholderText}>
@@ -812,6 +1004,44 @@ export default function App() {
   }
 
   if (activeSection === "focus") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>Weak Part Practice</Text>
+            <Text style={styles.subtitle}>{songTitle}</Text>
+          </View>
+        </View>
+
+        <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
+          <Text style={styles.placeholderTitle}>Weak Measures</Text>
+          {focusMeasures.length ? (
+            focusMeasures.map((item) => (
+              <View key={item.measure} style={styles.focusMeasureRow}>
+                <View style={styles.focusMeasureTextBlock}>
+                  <Text style={styles.focusMeasureTitle}>Measure {item.measure}</Text>
+                  <Text style={styles.focusMeasureMeta}>{item.mistakeCount} mistakes</Text>
+                </View>
+                <Pressable
+                  style={styles.focusMeasureButton}
+                  onPress={() => openWeakMeasureOnScore(item.measure)}
+                >
+                  <Text style={styles.focusMeasureButtonText}>Show Score</Text>
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.placeholderText}>No weak measures saved yet.</Text>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (false && activeSection === "focus") {
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
@@ -839,7 +1069,130 @@ export default function App() {
     );
   }
 
+  if (activeSection === "weakScore") {
+    const reviewMeasure = currentNote?.measure ?? pendingFocusMeasure ?? measureFrom;
+
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>Weak Measure Score</Text>
+            <Text style={styles.subtitle}>
+              {songTitle} - Measure {reviewMeasure}
+            </Text>
+          </View>
+          <Pressable style={styles.importButton} onPress={() => setActiveSection("focus")}>
+            <Text style={styles.importButtonText}>List</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.score}>
+          <ScoreWebView
+            key={`weak-score-${scoreViewVersion}`}
+            ref={scoreRef}
+            musicXml={musicXml}
+            layoutMode={layoutMode}
+            measureFrom={measureFrom}
+            measureTo={measureTo}
+            noteIndexOffset={noteIndexOffset}
+            useLowestChordNoteOnly={useLowestChordNoteOnly}
+            onPitch={() => {}}
+            onFftPitchClasses={() => {}}
+            onScoreReady={(payload) => {
+              stopRenderTimeout();
+              setScoreStatus(
+                `Ready - weak measure ${reviewMeasure} - measures ${measureFrom}-${measureTo}/${measureCount}`
+              );
+              setTimeout(() => markWeakMeasureOnScore(reviewMeasure), 250);
+            }}
+            onScoreError={(message) => {
+              stopRenderTimeout();
+              setScoreStatus(message ? `Render fallback needed: ${message}` : "Render fallback needed");
+            }}
+            onNoteMapWarning={() => {
+              setNoteColorAvailable(false);
+              setAnalysisStatus("Note color unavailable");
+            }}
+            onScrollInfo={() => {
+              setScoreTotalPages(totalMeasurePages);
+            }}
+            onMicReady={() => {}}
+            onMicUnavailable={() => {}}
+          />
+        </View>
+
+        <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>
+          <View style={styles.statusRow}>
+            <Text style={styles.label}>Review</Text>
+            <Text style={styles.value}>Red notes are the saved mistake area</Text>
+          </View>
+          <View style={styles.statusRow}>
+            <Text style={styles.label}>Score</Text>
+            <Text style={styles.value}>{scoreStatus}</Text>
+          </View>
+          <View style={styles.statusRow}>
+            <Text style={styles.label}>Focus</Text>
+            <Text style={styles.value}>
+              {focusMeasures.length
+                ? focusMeasures.map((item) => `M${item.measure}(${item.mistakeCount})`).join(" / ")
+                : "No focus section yet"}
+            </Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   if (activeSection === "achievement") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>Achievement</Text>
+            <Text style={styles.subtitle}>{songTitle}</Text>
+          </View>
+        </View>
+
+        <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
+          <Text style={styles.placeholderTitle}>Latest Result</Text>
+          <Text style={styles.placeholderText}>{resultSummary}</Text>
+          <Text style={styles.placeholderTitle}>Practice History</Text>
+          {achievementSessions.length ? (
+            achievementSessions.map((session, index) => (
+              <View key={session.id} style={styles.achievementRow}>
+                <View style={styles.achievementBadge}>
+                  <Text style={styles.achievementBadgeText}>{index + 1}</Text>
+                </View>
+                <View style={styles.achievementTextBlock}>
+                  <Text style={styles.achievementTitle}>
+                    {session.isMastered ? "MASTER" : "Not mastered"}
+                  </Text>
+                  <Text style={styles.achievementMeta}>
+                    wrong measures {session.wrongMeasureCount} · wrong notes {session.wrongNoteCount}
+                  </Text>
+                  <Text style={styles.achievementDate}>
+                    {new Date(session.practicedAt).toLocaleString()}
+                  </Text>
+                </View>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.placeholderText}>No practice history yet.</Text>
+          )}
+          <Text style={styles.placeholderTitle}>Master Rule</Text>
+          <Text style={styles.placeholderText}>MASTER when wrong measures are 3 or fewer.</Text>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (false && activeSection === "achievement") {
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
@@ -887,6 +1240,7 @@ export default function App() {
 
       <View style={styles.score}>
         <ScoreWebView
+          key={`score-${scoreViewVersion}`}
           ref={scoreRef}
           musicXml={musicXml}
           layoutMode={layoutMode}
@@ -1280,7 +1634,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "900",
   },
+  songRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+  },
   songButton: {
+    flex: 1,
     minHeight: 72,
     borderRadius: 8,
     paddingHorizontal: 16,
@@ -1300,6 +1660,59 @@ const styles = StyleSheet.create({
     color: "#66736b",
     fontSize: 12,
     fontWeight: "700",
+  },
+  focusMeasureRow: {
+    minHeight: 76,
+    borderRadius: 8,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+  },
+  focusMeasureTextBlock: {
+    flex: 1,
+  },
+  focusMeasureTitle: {
+    color: "#1f2a25",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  focusMeasureMeta: {
+    marginTop: 5,
+    color: "#66736b",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  focusMeasureButton: {
+    minHeight: 44,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1f6f5b",
+  },
+  focusMeasureButtonText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  deleteSongButton: {
+    minHeight: 72,
+    minWidth: 86,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#b3261e",
+  },
+  deleteSongButtonText: {
+    color: "#b3261e",
+    fontSize: 13,
+    fontWeight: "900",
   },
   toolbar: {
     flexDirection: "row",
