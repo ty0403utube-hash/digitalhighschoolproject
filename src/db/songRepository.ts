@@ -75,3 +75,7 @@ export function getSavedSong(id: string): SavedSong | null {
     updatedAt: song.updated_at,
   };
 }
+
+export function deleteSavedSong(id: string) {
+  db.runSync("DELETE FROM songs WHERE id = ?", [id]);
+}
