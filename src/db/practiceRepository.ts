@@ -136,3 +136,39 @@ export function getLatestSessionForSong(songId: string) {
     [songId]
   );
 }
+
+export type SongPracticeSessionSummary = {
+  id: string;
+  practicedAt: string;
+  totalNotes: number;
+  wrongMeasureCount: number;
+  wrongNoteCount: number;
+  isMastered: boolean;
+};
+
+export function getSessionsForSong(songId: string, limit = 10): SongPracticeSessionSummary[] {
+  return db.getAllSync<{
+    id: string;
+    practiced_at: string;
+    total_notes: number;
+    wrong_measure_count: number;
+    wrong_note_count: number;
+    is_mastered: number;
+  }>(
+    `
+    SELECT id, practiced_at, total_notes, wrong_measure_count, wrong_note_count, is_mastered
+    FROM practice_sessions
+    WHERE song_id = ?
+    ORDER BY practiced_at DESC
+    LIMIT ?
+    `,
+    [songId, limit]
+  ).map((session) => ({
+    id: session.id,
+    practicedAt: session.practiced_at,
+    totalNotes: session.total_notes,
+    wrongMeasureCount: session.wrong_measure_count,
+    wrongNoteCount: session.wrong_note_count,
+    isMastered: Boolean(session.is_mastered),
+  }));
+}
