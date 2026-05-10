@@ -12,6 +12,7 @@ export function initDb() {
       composer TEXT,
       storage_path TEXT,
       local_xml_path TEXT,
+      xml_content TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       dirty INTEGER NOT NULL DEFAULT 1
@@ -59,4 +60,10 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_mistakes_song_measure
     ON practice_mistakes(song_id, measure);
   `);
+
+  try {
+    db.execSync("ALTER TABLE songs ADD COLUMN xml_content TEXT;");
+  } catch {
+    // Existing databases already have this column.
+  }
 }
