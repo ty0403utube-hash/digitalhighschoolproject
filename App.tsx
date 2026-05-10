@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   AudioModule,
   getRecordingPermissionsAsync,
@@ -21,6 +22,11 @@ import { midiToHz } from "./src/musicxml/pitch";
 import { comparePitch } from "./src/practice/comparePitch";
 import { SAMPLE_MUSIC_XML } from "./src/sample/sampleMusicXml";
 import { PracticeMistakeDraft } from "./src/types/practice";
+
+type AppSection = "home" | "play" | "focus" | "achievement";
+
+const SAVED_SCORE_XML_KEY = "guitarPractice.savedScore.xml";
+const SAVED_SCORE_TITLE_KEY = "guitarPractice.savedScore.title";
 
 export default function App() {
   const SAME_BEAT_MS = 80;
@@ -60,6 +66,7 @@ export default function App() {
   const [analysisStatus, setAnalysisStatus] = useState("Mic idle");
   const [focusMeasures, setFocusMeasures] = useState<FocusMeasure[]>([]);
   const [resultSummary, setResultSummary] = useState("No saved result yet");
+  const [activeSection, setActiveSection] = useState<AppSection>("home");
   const songId = useMemo(() => createSongId(songTitle), [songTitle]);
   const startMicLabel = countdown
     ? `Start in ${countdown}`
@@ -106,10 +113,19 @@ export default function App() {
   }, [songId]);
 
   useEffect(() => {
+    restoreSavedScore();
+  }, []);
+
+  useEffect(() => {
+    if (activeSection !== "play") {
+      stopRenderTimeout();
+      return;
+    }
+
     setScoreStatus("Rendering score...");
     setScoreTotalPages(totalMeasurePages);
     startRenderTimeout();
-  }, [musicXml, layoutMode, scorePage, totalMeasurePages]);
+  }, [activeSection, musicXml, layoutMode, scorePage, totalMeasurePages]);
 
   useEffect(() => {
     setScorePage(1);
@@ -214,18 +230,42 @@ export default function App() {
       return;
     }
 
-    loadMusicXml(picked.xml, picked.name.replace(/\.(mxl|musicxml|xml)$/i, ""));
+    await loadMusicXml(picked.xml, picked.name.replace(/\.(mxl|musicxml|xml)$/i, ""));
   }
 
-  function loadMusicXml(xml: string, title: string) {
+  async function restoreSavedScore() {
+    try {
+      const [[, savedXml], [, savedTitle]] = await AsyncStorage.multiGet([
+        SAVED_SCORE_XML_KEY,
+        SAVED_SCORE_TITLE_KEY,
+      ]);
+
+      if (!savedXml) return;
+
+      await loadMusicXml(savedXml, savedTitle || "Saved Score", false);
+      setScoreStatus("Saved score loaded");
+    } catch {
+      setScoreStatus("Could not load saved score");
+    }
+  }
+
+  async function saveImportedScore(xml: string, title: string) {
+    await AsyncStorage.multiSet([
+      [SAVED_SCORE_XML_KEY, xml],
+      [SAVED_SCORE_TITLE_KEY, title],
+    ]);
+  }
+
+  async function loadMusicXml(xml: string, title: string, shouldSave = true) {
     const trimmedXml = xml.trim();
+    const nextTitle = title.trim() || "Imported Score";
 
     if (!trimmedXml.includes("<score-partwise") && !trimmedXml.includes("<score-timewise")) {
       Alert.alert("Invalid MusicXML", "Could not find a MusicXML score tag.");
       return;
     }
 
-    setSongTitle(title.trim() || "Imported Score");
+    setSongTitle(nextTitle);
     setMusicXml(trimmedXml);
     setCurrentIndex(0);
     setLastPitch("--");
@@ -243,7 +283,19 @@ export default function App() {
     stopPitchWatchdog();
     sessionMistakesRef.current = [];
     sessionSavedRef.current = false;
-    refreshPracticeInsights(createSongId(title.trim() || "Imported Score"));
+    refreshPracticeInsights(createSongId(nextTitle));
+
+    if (shouldSave) {
+      try {
+        await saveImportedScore(trimmedXml, nextTitle);
+        setScoreStatus("Score saved on this device");
+      } catch {
+        Alert.alert(
+          "Save failed",
+          "The score was imported, but it could not be saved on this device."
+        );
+      }
+    }
   }
 
   async function requestNativeMicrophonePermission() {
@@ -579,10 +631,6 @@ export default function App() {
     );
   }
 
-  function markCurrentNoteWrong() {
-    failCurrentNote();
-  }
-
   function createSongId(title: string) {
     return title
       .trim()
@@ -673,12 +721,108 @@ export default function App() {
     setMicStarting(false);
   }
 
+  if (activeSection === "home") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.homeHeader}>
+          <Text style={styles.homeTitle}>Guitar Practice</Text>
+          <Text style={styles.homeSubtitle}>{songTitle}</Text>
+        </View>
+
+        <View style={styles.categoryList}>
+          <Pressable style={styles.categoryButton} onPress={() => setActiveSection("play")}>
+            <Text style={styles.categoryNumber}>1</Text>
+            <View style={styles.categoryTextBlock}>
+              <Text style={styles.categoryTitle}>연주하기</Text>
+              <Text style={styles.categorySubtitle}>악보를 보고 바로 연습합니다</Text>
+            </View>
+          </Pressable>
+
+          <Pressable style={styles.categoryButton} onPress={() => setActiveSection("focus")}>
+            <Text style={styles.categoryNumber}>2</Text>
+            <View style={styles.categoryTextBlock}>
+              <Text style={styles.categoryTitle}>취약 부분 연습하기</Text>
+              <Text style={styles.categorySubtitle}>자주 틀린 마디를 확인합니다</Text>
+            </View>
+          </Pressable>
+
+          <Pressable style={styles.categoryButton} onPress={() => setActiveSection("achievement")}>
+            <Text style={styles.categoryNumber}>3</Text>
+            <View style={styles.categoryTextBlock}>
+              <Text style={styles.categoryTitle}>성취도 확인하기</Text>
+              <Text style={styles.categorySubtitle}>최근 연습 결과를 확인합니다</Text>
+            </View>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (activeSection === "focus") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>취약 부분 연습하기</Text>
+            <Text style={styles.subtitle}>{songTitle}</Text>
+          </View>
+        </View>
+
+        <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
+          <Text style={styles.placeholderTitle}>Focus Measures</Text>
+          <Text style={styles.placeholderText}>
+            {focusMeasures.length
+              ? focusMeasures.map((item) => `M${item.measure} (${item.mistakeCount})`).join(" / ")
+              : "아직 저장된 취약 마디가 없습니다."}
+          </Text>
+          <Pressable style={styles.primaryWideButton} onPress={() => setActiveSection("play")}>
+            <Text style={styles.primaryWideButtonText}>연주 화면으로 이동</Text>
+          </Pressable>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (activeSection === "achievement") {
+    return (
+      <SafeAreaView style={styles.root}>
+        <View style={styles.header}>
+          <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+            <Text style={styles.backButtonText}>Home</Text>
+          </Pressable>
+          <View style={styles.titleBlock}>
+            <Text style={styles.title}>성취도 확인하기</Text>
+            <Text style={styles.subtitle}>{songTitle}</Text>
+          </View>
+        </View>
+
+        <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
+          <Text style={styles.placeholderTitle}>Latest Result</Text>
+          <Text style={styles.placeholderText}>{resultSummary}</Text>
+          <Text style={styles.placeholderTitle}>Master Rule</Text>
+          <Text style={styles.placeholderText}>틀린 마디가 3개 이하이면 MASTER로 처리됩니다.</Text>
+          <Pressable style={styles.primaryWideButton} onPress={() => setActiveSection("play")}>
+            <Text style={styles.primaryWideButtonText}>연주 화면으로 이동</Text>
+          </Pressable>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.root}>
       <View style={styles.header}>
+        <Pressable style={styles.backButton} onPress={() => setActiveSection("home")}>
+          <Text style={styles.backButtonText}>Home</Text>
+        </Pressable>
         <View style={styles.titleBlock}>
-          <Text style={styles.title}>{songTitle}</Text>
-          <Text style={styles.subtitle}>{notes.length} parsed notes</Text>
+          <Text style={styles.title}>연주하기</Text>
+          <Text style={styles.subtitle}>
+            {songTitle} - {notes.length} parsed notes
+          </Text>
         </View>
         <Pressable style={styles.importButton} onPress={importMusicXml}>
           <Text style={styles.importButtonText}>Import</Text>
@@ -804,12 +948,6 @@ export default function App() {
           </Pressable>
         </View>
 
-        <View style={styles.analysisControls}>
-          <Pressable style={styles.testWrongButton} onPress={markCurrentNoteWrong}>
-            <Text style={styles.testButtonText}>Test Wrong</Text>
-          </Pressable>
-        </View>
-
         <View style={styles.statusRow}>
           <Text style={styles.label}>Score</Text>
           <Text style={styles.value}>{scoreStatus}</Text>
@@ -870,6 +1008,69 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f4f1ea",
   },
+  homeHeader: {
+    paddingHorizontal: 28,
+    paddingTop: 36,
+    paddingBottom: 24,
+  },
+  homeTitle: {
+    fontSize: 34,
+    fontWeight: "900",
+    color: "#1f2a25",
+  },
+  homeSubtitle: {
+    marginTop: 8,
+    fontSize: 16,
+    color: "#66736b",
+    fontWeight: "700",
+  },
+  categoryList: {
+    paddingHorizontal: 24,
+    gap: 14,
+  },
+  categoryButton: {
+    minHeight: 104,
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+    shadowColor: "#304038",
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+  },
+  categoryNumber: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    textAlign: "center",
+    textAlignVertical: "center",
+    overflow: "hidden",
+    backgroundColor: "#1f6f5b",
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  categoryTextBlock: {
+    flex: 1,
+  },
+  categoryTitle: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#1f2a25",
+  },
+  categorySubtitle: {
+    marginTop: 6,
+    fontSize: 14,
+    color: "#66736b",
+    fontWeight: "700",
+  },
   header: {
     paddingHorizontal: 18,
     paddingTop: 14,
@@ -879,6 +1080,21 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     backgroundColor: "#f4f1ea",
+  },
+  backButton: {
+    minHeight: 40,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#c9d2cc",
+  },
+  backButtonText: {
+    color: "#1f2a25",
+    fontSize: 14,
+    fontWeight: "800",
   },
   titleBlock: {
     flex: 1,
@@ -933,6 +1149,44 @@ const styles = StyleSheet.create({
   panelContent: {
     padding: 16,
     gap: 12,
+  },
+  placeholderPanel: {
+    flex: 1,
+    backgroundColor: "#fbfaf7",
+    borderTopWidth: 1,
+    borderColor: "#d8d2c4",
+  },
+  placeholderContent: {
+    padding: 24,
+    gap: 14,
+  },
+  placeholderTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#1f2a25",
+  },
+  placeholderText: {
+    minHeight: 48,
+    borderRadius: 8,
+    padding: 14,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+    color: "#1f2a25",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  primaryWideButton: {
+    minHeight: 48,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1f6f5b",
+  },
+  primaryWideButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "900",
   },
   toolbar: {
     flexDirection: "row",
@@ -1033,27 +1287,6 @@ const styles = StyleSheet.create({
   },
   stopButtonText: {
     color: "#1f2a25",
-    fontSize: 14,
-    fontWeight: "800",
-  },
-  testButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#2e7d32",
-  },
-  testWrongButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#b3261e",
-  },
-  testButtonText: {
-    color: "#ffffff",
     fontSize: 14,
     fontWeight: "800",
   },
