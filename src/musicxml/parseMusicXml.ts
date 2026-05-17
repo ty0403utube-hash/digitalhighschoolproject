@@ -59,6 +59,25 @@ function divisionsToMs(duration: number, divisions: number, bpm: number) {
   return (duration / divisions) * quarterNoteMs;
 }
 
+function beatUnitToQuarterMultiplier(beatUnit: string | undefined) {
+  switch (beatUnit) {
+    case "whole":
+      return 4;
+    case "half":
+      return 2;
+    case "quarter":
+      return 1;
+    case "eighth":
+      return 0.5;
+    case "16th":
+      return 0.25;
+    case "32nd":
+      return 0.125;
+    default:
+      return 1;
+  }
+}
+
 function readTempoFromDirection(directionNode: OrderedXmlNode, fallback: number) {
   const soundTempo = attrValue(firstChild(directionNode, "sound") ?? directionNode, "tempo");
   if (soundTempo) return Number(soundTempo);
@@ -66,8 +85,9 @@ function readTempoFromDirection(directionNode: OrderedXmlNode, fallback: number)
   const directionType = firstChild(directionNode, "direction-type");
   const metronome = directionType ? firstChild(directionType, "metronome") : undefined;
   const perMinute = metronome ? childText(metronome, "per-minute") : undefined;
+  const beatUnit = metronome ? childText(metronome, "beat-unit") : undefined;
 
-  return perMinute ? Number(perMinute) : fallback;
+  return perMinute ? Number(perMinute) * beatUnitToQuarterMultiplier(beatUnit) : fallback;
 }
 
 function readDuration(node: OrderedXmlNode, divisions: number, bpm: number) {
@@ -98,6 +118,52 @@ function readPitch(noteNode: OrderedXmlNode) {
   };
 }
 
+function repeatDirection(measureNode: OrderedXmlNode, direction: "forward" | "backward") {
+  return childrenNamed(measureNode, "barline").some((barline) => {
+    const repeat = firstChild(barline, "repeat");
+    return repeat ? attrValue(repeat, "direction") === direction : false;
+  });
+}
+
+function backwardRepeatTimes(measureNode: OrderedXmlNode) {
+  for (const barline of childrenNamed(measureNode, "barline")) {
+    const repeat = firstChild(barline, "repeat");
+    if (repeat && attrValue(repeat, "direction") === "backward") {
+      const times = Number(attrValue(repeat, "times") ?? 2);
+      return Number.isFinite(times) && times > 1 ? Math.floor(times) : 2;
+    }
+  }
+
+  return 2;
+}
+
+function expandRepeats(measures: OrderedXmlNode[]) {
+  const expanded: OrderedXmlNode[] = [];
+  let repeatStartIndex = 0;
+
+  for (let index = 0; index < measures.length; index += 1) {
+    const measure = measures[index];
+    expanded.push(measure);
+
+    if (repeatDirection(measure, "forward")) {
+      repeatStartIndex = index;
+    }
+
+    if (repeatDirection(measure, "backward")) {
+      const times = backwardRepeatTimes(measure);
+      const repeatedSection = measures.slice(repeatStartIndex, index + 1);
+
+      for (let repeatCount = 1; repeatCount < times; repeatCount += 1) {
+        expanded.push(...repeatedSection);
+      }
+
+      repeatStartIndex = index + 1;
+    }
+  }
+
+  return expanded;
+}
+
 export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): PracticeNote[] {
   const parser = new XMLParser({
     ignoreAttributes: false,
@@ -109,7 +175,7 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
   const doc = parser.parse(xml) as OrderedXmlNode[];
   const score = findFirstNode(doc, "score-partwise") ?? findFirstNode(doc, "score-timewise");
   const part = score ? firstChild(score, "part") : undefined;
-  const measures = part ? childrenNamed(part, "measure") : [];
+  const measures = part ? expandRepeats(childrenNamed(part, "measure")) : [];
 
   let divisions = 1;
   let bpm = 80;
