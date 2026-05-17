@@ -12,8 +12,11 @@ import {
   FocusMeasure,
   getFocusMeasuresForSong,
   getLatestSessionForSong,
+  getMistakeNoteIndicesForSongMeasure,
   getSessionsForSong,
+  getSongAchievementSummaries,
   savePracticeSession,
+  SongAchievementSummary,
   SongPracticeSessionSummary,
 } from "./src/db/practiceRepository";
 import { initDb } from "./src/db/sqlite";
@@ -30,9 +33,8 @@ import { midiToHz } from "./src/musicxml/pitch";
 import { comparePitch } from "./src/practice/comparePitch";
 import { SAMPLE_MUSIC_XML } from "./src/sample/sampleMusicXml";
 import { PracticeMistakeDraft } from "./src/types/practice";
-
 type AppSection = "home" | "library" | "play" | "focus" | "weakScore" | "achievement";
-
+const PITCH_TOLERANCE_CENTS = 50;
 export default function App() {
   const SAME_BEAT_MS = 80;
   const scoreRef = useRef<ScoreWebViewHandle>(null);
@@ -50,7 +52,6 @@ export default function App() {
   const isListeningRef = useRef(false);
   const sessionMistakesRef = useRef<PracticeMistakeDraft[]>([]);
   const sessionSavedRef = useRef(false);
-
   const [musicXml, setMusicXml] = useState(SAMPLE_MUSIC_XML);
   const [songTitle, setSongTitle] = useState("Sample Melody");
   const [scoreStatus, setScoreStatus] = useState("Rendering score...");
@@ -72,9 +73,12 @@ export default function App() {
   const [focusMeasures, setFocusMeasures] = useState<FocusMeasure[]>([]);
   const [resultSummary, setResultSummary] = useState("No saved result yet");
   const [achievementSessions, setAchievementSessions] = useState<SongPracticeSessionSummary[]>([]);
+  const [achievementSummaries, setAchievementSummaries] = useState<SongAchievementSummary[]>([]);
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [savedSongs, setSavedSongs] = useState<SavedSong[]>([]);
   const [pendingFocusMeasure, setPendingFocusMeasure] = useState<number | null>(null);
+  const [focusPracticeMeasure, setFocusPracticeMeasure] = useState<number | null>(null);
+  const [weakMistakeNoteIndices, setWeakMistakeNoteIndices] = useState<number[]>([]);
   const [scoreViewVersion, setScoreViewVersion] = useState(0);
   const songId = useMemo(() => createSongId(songTitle), [songTitle]);
   const startMicLabel = countdown
@@ -84,7 +88,6 @@ export default function App() {
       : isListening
         ? "Listening"
         : "Start Mic";
-
   const notes = useMemo(
     () => parseMusicXml(musicXml, useLowestChordNoteOnly),
     [musicXml, useLowestChordNoteOnly]
@@ -101,14 +104,18 @@ export default function App() {
     : "--";
   const measureCount = useMemo(() => countMeasures(musicXml), [musicXml]);
   const measuresPerPage = 6;
+  const previewMeasuresPerPage = 1;
   const totalMeasurePages = Math.max(1, Math.ceil(measureCount / measuresPerPage));
   const measureFrom = (scorePage - 1) * measuresPerPage + 1;
-  const measureTo = Math.min(measureCount, scorePage * measuresPerPage);
+  const pageMeasureTo = Math.min(measureCount, scorePage * measuresPerPage);
+  const previewMeasureFrom = pageMeasureTo + 1;
+  const previewMeasureTo = Math.min(measureCount, pageMeasureTo + previewMeasuresPerPage);
+  const hasPreviewMeasures = previewMeasureFrom <= previewMeasureTo;
+  const measureTo = hasPreviewMeasures ? previewMeasureTo : pageMeasureTo;
   const noteIndexOffset = useMemo(
     () => findFirstNoteIndexForPage(scorePage),
     [scorePage, notes, measureCount]
   );
-
   useEffect(() => {
     initDb();
     refreshSavedSongs();
@@ -121,18 +128,15 @@ export default function App() {
       stopPitchWatchdog();
     };
   }, [songId]);
-
   useEffect(() => {
     if (activeSection !== "play" && activeSection !== "weakScore") {
       stopRenderTimeout();
       return;
     }
-
     setScoreStatus("Rendering score...");
     setScoreTotalPages(totalMeasurePages);
     startRenderTimeout();
   }, [activeSection, musicXml, layoutMode, scorePage, totalMeasurePages]);
-
   useEffect(() => {
     if (
       (activeSection !== "play" && activeSection !== "weakScore") ||
@@ -140,11 +144,9 @@ export default function App() {
     ) {
       return;
     }
-
     const page = Math.max(1, Math.ceil(pendingFocusMeasure / measuresPerPage));
     const boundedPage = Math.max(1, Math.min(totalMeasurePages, page));
     const firstIndex = notes.findIndex((note) => note.measure >= pendingFocusMeasure);
-
     setScorePage(boundedPage);
     if (firstIndex >= 0) {
       currentIndexRef.current = firstIndex;
@@ -156,41 +158,32 @@ export default function App() {
     setScoreStatus("Rendering weak measure...");
     setPendingFocusMeasure(null);
   }, [activeSection, pendingFocusMeasure, notes, totalMeasurePages]);
-
   useEffect(() => {
     setScorePage(1);
   }, [musicXml]);
-
   useEffect(() => {
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
-
   useEffect(() => {
     isListeningRef.current = isListening;
   }, [isListening]);
-
   useEffect(() => {
     if (!currentNote) return;
-
     const pageForCurrentNote = Math.ceil(currentNote.measure / measuresPerPage);
     const boundedPage = Math.max(1, Math.min(totalMeasurePages, pageForCurrentNote));
-
     if (boundedPage !== scorePage) {
       setScorePage(boundedPage);
     }
   }, [currentNote, measuresPerPage, scorePage, totalMeasurePages]);
-
   function countMeasures(xml: string) {
     return (xml.match(/<measure\b/g) ?? []).length || 1;
   }
-
   function stopRenderTimeout() {
     if (renderTimeoutRef.current) {
       clearTimeout(renderTimeoutRef.current);
       renderTimeoutRef.current = null;
     }
   }
-
   function stopCountdown() {
     if (countdownTimerRef.current) {
       clearInterval(countdownTimerRef.current);
@@ -198,27 +191,23 @@ export default function App() {
     }
     setCountdown(null);
   }
-
   function stopNoteTimer() {
     if (noteTimerRef.current) {
       clearInterval(noteTimerRef.current);
       noteTimerRef.current = null;
     }
   }
-
   function stopPitchWatchdog() {
     if (pitchWatchdogRef.current) {
       clearTimeout(pitchWatchdogRef.current);
       pitchWatchdogRef.current = null;
     }
   }
-
   async function stopNativeMeterFallback() {
     if (nativeMeterTimerRef.current) {
       clearInterval(nativeMeterTimerRef.current);
       nativeMeterTimerRef.current = null;
     }
-
     if (nativeRecorderRef.current) {
       try {
         await nativeRecorderRef.current.stop();
@@ -228,7 +217,6 @@ export default function App() {
       nativeRecorderRef.current = null;
     }
   }
-
   function startRenderTimeout() {
     stopRenderTimeout();
     renderTimeoutRef.current = setTimeout(() => {
@@ -239,10 +227,8 @@ export default function App() {
       );
     }, 60000);
   }
-
   async function importMusicXml() {
     let picked;
-
     try {
       setScoreStatus("Opening file...");
       picked = await pickMusicXmlFile();
@@ -254,37 +240,32 @@ export default function App() {
       );
       return;
     }
-
     if (!picked) {
       setScoreStatus("Import cancelled");
       return;
     }
-
     await loadMusicXml(picked.xml, picked.name.replace(/\.(mxl|musicxml|xml)$/i, ""));
     setActiveSection("play");
   }
-
   function refreshSavedSongs() {
     try {
       setSavedSongs(getSavedSongs());
+      setAchievementSummaries(getSongAchievementSummaries());
     } catch {
       setSavedSongs([]);
+      setAchievementSummaries([]);
     }
   }
-
   async function openSavedSong(id: string) {
     const savedSong = getSavedSong(id);
-
     if (!savedSong) {
       Alert.alert("Song not found", "This song is no longer saved on this device.");
       refreshSavedSongs();
       return;
     }
-
     await loadMusicXml(savedSong.xmlContent, savedSong.title, false);
     setActiveSection("play");
   }
-
   function confirmDeleteSong(song: SavedSong) {
     Alert.alert("Delete song", `Delete "${song.title}" from this device?`, [
       {
@@ -297,7 +278,6 @@ export default function App() {
         onPress: () => {
           deleteSavedSong(song.id);
           refreshSavedSongs();
-
           if (createSongId(songTitle) === song.id) {
             setSongTitle("Sample Melody");
             setMusicXml(SAMPLE_MUSIC_XML);
@@ -311,12 +291,10 @@ export default function App() {
       },
     ]);
   }
-
   async function practiceSampleScore() {
     await loadMusicXml(SAMPLE_MUSIC_XML, "Mixed Rhythm Guitar Test", false);
     setActiveSection("play");
   }
-
   async function createDemoFocusResult() {
     const demoTitle = "Mixed Rhythm Guitar Test";
     const demoSongId = createSongId(demoTitle);
@@ -334,7 +312,6 @@ export default function App() {
       reason: "timeout",
     }));
     const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
-
     saveSong({
       id: demoSongId,
       title: demoTitle,
@@ -348,7 +325,6 @@ export default function App() {
       wrongNoteCount: mistakes.length,
       isMastered: wrongMeasureCount <= 3,
     });
-
     refreshSavedSongs();
     await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
     refreshPracticeInsights(demoSongId);
@@ -359,12 +335,10 @@ export default function App() {
     setScoreViewVersion((version) => version + 1);
     setActiveSection("weakScore");
   }
-
   async function createDemoAchievementResult() {
     const demoTitle = "Mixed Rhythm Guitar Test";
     const demoSongId = createSongId(demoTitle);
     const demoNotes = parseMusicXml(SAMPLE_MUSIC_XML, false);
-
     const makeMistakes = (measureNumbers: number[]) =>
       measureNumbers
         .map((measure) => demoNotes.find((note) => note.measure === measure))
@@ -377,19 +351,16 @@ export default function App() {
           playedMidi: null,
           reason: "timeout" as const,
         }));
-
     const demoSessions = [
       makeMistakes([2, 3, 4, 5, 6]),
       makeMistakes([3, 5, 6, 7]),
       makeMistakes([3, 6]),
     ];
-
     saveSong({
       id: demoSongId,
       title: demoTitle,
       xmlContent: SAMPLE_MUSIC_XML,
     });
-
     for (const mistakes of demoSessions) {
       const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
       savePracticeSession({
@@ -401,22 +372,18 @@ export default function App() {
         isMastered: wrongMeasureCount <= 3,
       });
     }
-
     refreshSavedSongs();
     await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
     refreshPracticeInsights(demoSongId);
     setActiveSection("achievement");
   }
-
   async function loadMusicXml(xml: string, title: string, shouldSave = true) {
     const trimmedXml = xml.trim();
     const nextTitle = title.trim() || "Imported Score";
-
     if (!trimmedXml.includes("<score-partwise") && !trimmedXml.includes("<score-timewise")) {
       Alert.alert("Invalid MusicXML", "Could not find a MusicXML score tag.");
       return;
     }
-
     setSongTitle(nextTitle);
     setMusicXml(trimmedXml);
     setCurrentIndex(0);
@@ -436,7 +403,6 @@ export default function App() {
     sessionMistakesRef.current = [];
     sessionSavedRef.current = false;
     refreshPracticeInsights(createSongId(nextTitle));
-
     if (shouldSave) {
       try {
         saveSong({
@@ -454,15 +420,12 @@ export default function App() {
       }
     }
   }
-
   async function requestNativeMicrophonePermission() {
     try {
       const currentPermission = await getRecordingPermissionsAsync();
-
       if (!currentPermission.granted) {
         await requestRecordingPermissionsAsync();
       }
-
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
@@ -472,35 +435,27 @@ export default function App() {
       // Keep the old WebView mic path as the source of truth.
     }
   }
-
   async function startNativeMeterFallback() {
     if (nativeRecorderRef.current) return;
-
     try {
       await requestNativeMicrophonePermission();
-
       const recorder = new AudioModule.AudioRecorder({
         ...RecordingPresets.LOW_QUALITY,
         isMeteringEnabled: true,
         numberOfChannels: 1,
       });
-
       await recorder.prepareToRecordAsync();
       recorder.record();
       nativeRecorderRef.current = recorder;
       setAnalysisStatus("Native mic fallback");
-
       nativeMeterTimerRef.current = setInterval(() => {
         const status = recorder.getStatus();
         const metering = status.metering;
-
         if (typeof metering !== "number") {
           setNativeMicLevel("meter unavailable");
           return;
         }
-
         setNativeMicLevel(`${metering.toFixed(1)} dB`);
-
         if (isListeningRef.current && metering > -45) {
           setAnalysisStatus("Native mic hears sound");
         }
@@ -512,19 +467,15 @@ export default function App() {
       );
     }
   }
-
   async function startAnalysis(mode: "restart" | "resume" = "restart") {
     if (notes.length === 0) {
       Alert.alert("No notes", "No parsed notes were found in this score.");
       return;
     }
-
     setAnalysisStatus("Checking mic permission...");
     await requestNativeMicrophonePermission();
-
     stopCountdown();
     stopNoteTimer();
-
     const startIndex = mode === "resume" ? currentIndexRef.current : 0;
     currentIndexRef.current = startIndex;
     setCurrentIndex(startIndex);
@@ -536,7 +487,6 @@ export default function App() {
     setIsListening(false);
     receivedPitchRef.current = false;
     matchedRef.current = false;
-
     if (mode === "restart") {
       sessionMistakesRef.current = [];
       sessionSavedRef.current = false;
@@ -545,7 +495,6 @@ export default function App() {
     } else {
       setResultSummary("Practice resumed");
     }
-
     scoreRef.current?.startMic();
     stopPitchWatchdog();
     pitchWatchdogRef.current = setTimeout(() => {
@@ -554,7 +503,6 @@ export default function App() {
       }
     }, 5000);
   }
-
   function stopAnalysis() {
     stopCountdown();
     stopNoteTimer();
@@ -563,18 +511,16 @@ export default function App() {
     setWaitingToStart(false);
     setMicStarting(false);
     setIsListening(false);
-    setAnalysisStatus("Mic paused");
+    setCanResumeFromMistake(notes.length > 0 && currentIndexRef.current < notes.length - 1);
+    setAnalysisStatus("Stopped");
   }
-
   function beginCountdown() {
     stopCountdown();
     setCountdown(3);
     setAnalysisStatus("Starting in 3");
-
     let next = 3;
     countdownTimerRef.current = setInterval(() => {
       next -= 1;
-
       if (next <= 0) {
         stopCountdown();
         setWaitingToStart(false);
@@ -583,35 +529,36 @@ export default function App() {
         beginCurrentNote();
         return;
       }
-
       setCountdown(next);
       setAnalysisStatus(`Starting in ${next}`);
     }, 1000);
   }
-
   function beginCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
     if (!note) return;
-
     matchedRef.current = false;
     noteStartedAtRef.current = Date.now();
-    scoreRef.current?.setNoteProgress(note.index, 0);
-
+    const targetNotes = getNotesAtSameStart(note);
+    for (const targetNote of targetNotes) {
+      scoreRef.current?.setNoteColor(targetNote.index, "#1565c0");
+      scoreRef.current?.setNoteProgress(targetNote.index, 0);
+    }
+    setAnalysisStatus(`Play ${targetNotes.map(formatNoteName).join("/")}`);
     noteTimerRef.current = setInterval(() => {
       const activeNote = notes[currentIndexRef.current];
       if (!activeNote) return;
-
       const elapsed = Date.now() - noteStartedAtRef.current;
-      const progress = elapsed / activeNote.durationMs;
-      scoreRef.current?.setNoteProgress(activeNote.index, progress);
-
-      if (matchedRef.current && elapsed >= activeNote.durationMs) {
+      const eventDurationMs = getEventDurationMs(activeNote);
+      for (const targetNote of getNotesAtSameStart(activeNote)) {
+        const progress = elapsed / targetNote.durationMs;
+        scoreRef.current?.setNoteProgress(targetNote.index, progress);
+      }
+      if (matchedRef.current && elapsed >= eventDurationMs) {
         passCurrentNote();
         return;
       }
-
-      if (!matchedRef.current && elapsed >= activeNote.durationMs + getMissGraceMs(activeNote.durationMs)) {
+      if (!matchedRef.current && elapsed >= eventDurationMs + getMissGraceMs(eventDurationMs)) {
         if (matchedRef.current) {
           passCurrentNote();
         } else {
@@ -620,105 +567,126 @@ export default function App() {
       }
     }, 50);
   }
-
   function getMissGraceMs(durationMs: number) {
-    return Math.min(900, Math.max(250, durationMs * 0.45));
+    return Math.min(260, Math.max(160, durationMs * 0.4));
   }
+  function getNextIndexAfterSameStart(note: NonNullable<typeof currentNote>) {
+    const groupNotes = getNotesAtSameStart(note);
+    const lastGroupIndex = Math.max(...groupNotes.map((groupNote) => groupNote.index));
+    return lastGroupIndex + 1;
+  }
+  function getEventDurationMs(note: NonNullable<typeof currentNote>) {
+    const groupNotes = getNotesAtSameStart(note);
+    const nextIndex = getNextIndexAfterSameStart(note);
+    const nextNote = notes[nextIndex];
 
+    if (nextNote && nextNote.startMs > note.startMs + SAME_BEAT_MS) {
+      return Math.max(80, nextNote.startMs - note.startMs);
+    }
+
+    return Math.max(...groupNotes.map((groupNote) => groupNote.durationMs));
+  }
+  function getDelayToNextEvent(note: NonNullable<typeof currentNote>, nextIndex: number) {
+    const nextNote = notes[nextIndex];
+    if (!nextNote) return 0;
+
+    return Math.max(0, nextNote.startMs - note.startMs - getEventDurationMs(note));
+  }
+  function shouldFinishFocusPractice(nextIndex: number) {
+    if (focusPracticeMeasure === null) return false;
+    const nextNote = notes[nextIndex];
+    return !nextNote || nextNote.measure !== focusPracticeMeasure;
+  }
   function passCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
     if (!note) return;
-
     const groupNotes = getNotesAtSameStart(note);
     for (const groupNote of groupNotes) {
       scoreRef.current?.setNoteColor(groupNote.index, "#2e7d32");
     }
-
-    const lastGroupIndex = Math.max(...groupNotes.map((groupNote) => groupNote.index));
-    const nextIndex = lastGroupIndex + 1;
-
-    if (nextIndex >= notes.length) {
+    const nextIndex = getNextIndexAfterSameStart(note);
+    if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
       currentIndexRef.current = notes.length - 1;
-      setCurrentIndex(notes.length - 1);
+      setCurrentIndex(Math.min(nextIndex, notes.length - 1));
       setIsListening(false);
-      setAnalysisStatus("Finished");
+      setAnalysisStatus(focusPracticeMeasure === null ? "Finished" : "Focus practice finished");
       saveCurrentPracticeSession();
+      setFocusPracticeMeasure(null);
       return;
     }
-
     currentIndexRef.current = nextIndex;
     setCurrentIndex(nextIndex);
     setAnalysisStatus("Matched");
-
-    const nextNote = notes[nextIndex];
-    const restDelayMs = nextNote
-      ? Math.max(0, nextNote.startMs - note.startMs - note.durationMs)
-      : 0;
-
+    const restDelayMs = getDelayToNextEvent(note, nextIndex);
     setTimeout(() => {
       if (isListeningRef.current) {
         beginCurrentNote();
       }
     }, restDelayMs);
   }
-
   function failCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
-    if (note) {
-      const groupNotes = getNotesAtSameStart(note);
-      for (const groupNote of groupNotes) {
-        scoreRef.current?.setNoteColor(groupNote.index, "#e53935");
+    if (!note) return;
+    const groupNotes = getNotesAtSameStart(note);
+    for (const groupNote of groupNotes) {
+      scoreRef.current?.setNoteColor(groupNote.index, "#e53935");
+    }
+    recordMistake(note, "timeout");
+    const nextIndex = getNextIndexAfterSameStart(note);
+    if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
+      currentIndexRef.current = notes.length - 1;
+      setCurrentIndex(Math.min(nextIndex, notes.length - 1));
+      setIsListening(false);
+      setAnalysisStatus(
+        focusPracticeMeasure === null ? "Finished with mistakes" : "Focus practice finished"
+      );
+      saveCurrentPracticeSession();
+      setFocusPracticeMeasure(null);
+      return;
+    }
+    currentIndexRef.current = nextIndex;
+    setCurrentIndex(nextIndex);
+    setCanResumeFromMistake(false);
+    setAnalysisStatus("Missed - continuing");
+    const restDelayMs = getDelayToNextEvent(note, nextIndex);
+    setTimeout(() => {
+      if (isListeningRef.current) {
+        beginCurrentNote();
       }
-    }
-    setIsListening(false);
-    setCanResumeFromMistake(true);
-    setAnalysisStatus("Missed - restart or resume");
-
-    if (note) {
-      recordMistake(note, "timeout");
-    }
+    }, restDelayMs);
   }
-
   function handlePitch(payload: { hz: number; clarity: number }) {
     receivedPitchRef.current = true;
     stopPitchWatchdog();
     lastPitchPayloadRef.current = { ...payload, receivedAt: Date.now() };
     setLastPitch(`${payload.hz.toFixed(1)} Hz / ${payload.clarity.toFixed(2)}`);
-
     const activeNote = notes[currentIndexRef.current];
     if (!isListening || !activeNote) {
       return;
     }
-
     matchPitchForNote(activeNote, payload);
   }
-
   function handleFftPitchClasses(payload: {
     pitchClasses: number[];
     peaks: Array<{ hz: number; db: number }>;
   }) {
     receivedPitchRef.current = true;
     stopPitchWatchdog();
-
     const activeNote = notes[currentIndexRef.current];
     if (!isListening || !activeNote || !payload.pitchClasses.length) {
       return;
     }
-
     const candidateNotes = getNotesAtSameStart(activeNote);
     const strongestPeak = payload.peaks[0];
-
     if (candidateNotes.length < 2 || !strongestPeak || strongestPeak.db < -55) {
       return;
     }
-
     const matchedCandidate = candidateNotes.find((note) => {
       const targetPitchClass = ((note.midi % 12) + 12) % 12;
       return payload.pitchClasses.includes(targetPitchClass);
     });
-
     if (matchedCandidate) {
       setLastPlayedMidi(
         strongestPeak ? `FFT ${strongestPeak.hz} Hz / ${strongestPeak.db} dB` : "FFT matched"
@@ -727,7 +695,6 @@ export default function App() {
       matchedRef.current = true;
     }
   }
-
   function matchPitchForNote(
     activeNote: NonNullable<typeof currentNote>,
     payload: { hz: number; clarity: number }
@@ -735,33 +702,30 @@ export default function App() {
     if (payload.clarity < 0.3) {
       return;
     }
-
     const candidateNotes = getNotesAtSameStart(activeNote);
     const matchedCandidate = candidateNotes.find((note) => pitchMatchesNote(payload.hz, note));
     const displayNote = matchedCandidate ?? activeNote;
     const writtenPitchResult = comparePitch({
       playedHz: payload.hz,
       targetMidi: displayNote.midi,
-      toleranceSemitone: 0.9,
+      toleranceCents: PITCH_TOLERANCE_CENTS,
     });
     const guitarSoundingResult = comparePitch({
       playedHz: payload.hz,
       targetMidi: displayNote.midi - 12,
-      toleranceSemitone: 0.9,
+      toleranceCents: PITCH_TOLERANCE_CENTS,
     });
     const higherOctaveResult = comparePitch({
       playedHz: payload.hz,
       targetMidi: displayNote.midi + 12,
-      toleranceSemitone: 0.9,
+      toleranceCents: PITCH_TOLERANCE_CENTS,
     });
     const result = guitarSoundingResult.matched
       ? guitarSoundingResult
       : higherOctaveResult.matched
         ? higherOctaveResult
         : writtenPitchResult;
-
     setLastPlayedMidi(`${result.playedMidi} (${Math.round(result.cents)} cents)`);
-
     if (matchedCandidate) {
       setAnalysisStatus(`Matched ${formatNoteName(matchedCandidate)}`);
       matchedRef.current = true;
@@ -769,51 +733,59 @@ export default function App() {
       setAnalysisStatus(`Listening for ${candidateNotes.map(formatNoteName).join("/")}`);
     }
   }
-
   function getNotesAtSameStart(note: NonNullable<typeof currentNote>) {
     return notes.filter(
       (candidate) =>
         candidate.measure === note.measure && Math.abs(candidate.startMs - note.startMs) < SAME_BEAT_MS
     );
   }
-
   function formatNoteName(note: NonNullable<typeof currentNote>) {
     const accidental = note.alter > 0 ? "#" : note.alter < 0 ? "b" : "";
     return `${note.step}${accidental}${note.octave}`;
   }
-
   function pitchMatchesNote(hz: number, note: NonNullable<typeof currentNote>) {
-    const playedMidi = Math.round(69 + 12 * Math.log2(hz / 440));
-    const playedPitchClass = ((playedMidi % 12) + 12) % 12;
-    const targetPitchClass = ((note.midi % 12) + 12) % 12;
-
-    if (playedPitchClass === targetPitchClass) {
-      return true;
-    }
-
     return (
-      comparePitch({ playedHz: hz, targetMidi: note.midi, toleranceSemitone: 0.9 }).matched ||
-      comparePitch({ playedHz: hz, targetMidi: note.midi - 12, toleranceSemitone: 0.9 }).matched ||
-      comparePitch({ playedHz: hz, targetMidi: note.midi + 12, toleranceSemitone: 0.9 }).matched
+      comparePitch({ playedHz: hz, targetMidi: note.midi, toleranceCents: PITCH_TOLERANCE_CENTS })
+        .matched ||
+      comparePitch({
+        playedHz: hz,
+        targetMidi: note.midi - 12,
+        toleranceCents: PITCH_TOLERANCE_CENTS,
+      }).matched ||
+      comparePitch({
+        playedHz: hz,
+        targetMidi: note.midi + 12,
+        toleranceCents: PITCH_TOLERANCE_CENTS,
+      }).matched
     );
   }
-
   function createSongId(title: string) {
-    return title
+    const normalized = title
       .trim()
       .toLowerCase()
-      .replace(/[^a-z0-9가-힣]+/g, "_")
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "")
-      .slice(0, 80) || "untitled_score";
+      .slice(0, 60);
+
+    return normalized || `song_${Math.abs(hashString(title))}`;
   }
 
+  function hashString(value: string) {
+    let hash = 0;
+
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash << 5) - hash + value.charCodeAt(i);
+      hash |= 0;
+    }
+
+    return hash;
+  }
   function refreshPracticeInsights(nextSongId = songId) {
     try {
       const focus = getFocusMeasuresForSong(nextSongId, 3);
       const latestSession = getLatestSessionForSong(nextSongId);
-
       setFocusMeasures(focus);
-
       if (latestSession) {
         setResultSummary(
           `${latestSession.is_mastered ? "MASTER" : "Not mastered"} - wrong measures ${
@@ -824,19 +796,18 @@ export default function App() {
         setResultSummary("No saved result yet");
       }
       setAchievementSessions(getSessionsForSong(nextSongId, 8));
+      setAchievementSummaries(getSongAchievementSummaries());
     } catch {
       setFocusMeasures([]);
       setAchievementSessions([]);
+      setAchievementSummaries([]);
     }
   }
-
   function recordMistake(note: NonNullable<typeof currentNote>, reason: "timeout" | "wrong_pitch") {
     const alreadyRecorded = sessionMistakesRef.current.some(
       (mistake) => mistake.measure === note.measure && mistake.noteIndex === note.index
     );
-
     if (alreadyRecorded) return;
-
     sessionMistakesRef.current.push({
       songId,
       measure: note.measure,
@@ -846,16 +817,13 @@ export default function App() {
       reason,
     });
   }
-
   function saveCurrentPracticeSession() {
     if (sessionSavedRef.current || notes.length === 0) return;
-
     const mistakes = sessionMistakesRef.current;
     const wrongMeasures = new Set(mistakes.map((mistake) => mistake.measure));
     const wrongMeasureCount = wrongMeasures.size;
     const wrongNoteCount = mistakes.length;
     const isMastered = wrongMeasureCount <= 3;
-
     savePracticeSession({
       songId,
       totalNotes: notes.length,
@@ -864,21 +832,19 @@ export default function App() {
       wrongNoteCount,
       isMastered,
     });
-
     sessionSavedRef.current = true;
     setResultSummary(
       `${isMastered ? "MASTER" : "Not mastered"} - wrong measures ${wrongMeasureCount}, wrong notes ${wrongNoteCount}`
     );
     refreshPracticeInsights(songId);
+    refreshSavedSongs();
   }
-
   function findFirstNoteIndexForPage(page: number) {
     const from = (page - 1) * measuresPerPage + 1;
     const to = Math.min(measureCount, page * measuresPerPage);
     const index = notes.findIndex((note) => note.measure >= from && note.measure <= to);
     return index >= 0 ? index : 0;
   }
-
   function goToMeasurePage(page: number) {
     const boundedPage = Math.max(1, Math.min(totalMeasurePages, page));
     setScorePage(boundedPage);
@@ -889,19 +855,33 @@ export default function App() {
     setIsListening(false);
     setMicStarting(false);
   }
-
   function openWeakMeasureOnScore(measure: number) {
     setPendingFocusMeasure(measure);
+    setWeakMistakeNoteIndices(getMistakeNoteIndicesForSongMeasure(songId, measure));
     setScoreViewVersion((version) => version + 1);
     setActiveSection("weakScore");
   }
-
+  function practiceWeakMeasure(measure: number) {
+    const firstIndex = notes.findIndex((note) => note.measure === measure);
+    if (firstIndex < 0) {
+      Alert.alert("Measure not found", "Could not find this measure in the current score.");
+      return;
+    }
+    setFocusPracticeMeasure(measure);
+    currentIndexRef.current = firstIndex;
+    setCurrentIndex(firstIndex);
+    setScorePage(Math.max(1, Math.ceil(measure / measuresPerPage)));
+    setActiveSection("play");
+    setAnalysisStatus(`Focus practice: measure ${measure}`);
+  }
   function markWeakMeasureOnScore(measure: number) {
-    for (const note of notes.filter((candidate) => candidate.measure === measure)) {
+    const indices = weakMistakeNoteIndices.length
+      ? weakMistakeNoteIndices
+      : notes.filter((candidate) => candidate.measure === measure).map((note) => note.index);
+    for (const note of notes.filter((candidate) => indices.includes(candidate.index))) {
       scoreRef.current?.setNoteColor(note.index, "#e53935");
     }
   }
-
   if (activeSection === "home") {
     return (
       <SafeAreaView style={styles.root}>
@@ -909,56 +889,50 @@ export default function App() {
           <Text style={styles.homeTitle}>Guitar Practice</Text>
           <Text style={styles.homeSubtitle}>{songTitle}</Text>
         </View>
-
         <View style={styles.categoryList}>
           <Pressable style={styles.categoryButton} onPress={() => setActiveSection("library")}>
             <Text style={styles.categoryNumber}>1</Text>
             <View style={styles.categoryTextBlock}>
-              <Text style={styles.categoryTitle}>연주하기</Text>
-              <Text style={styles.categorySubtitle}>저장한 악보를 보고 바로 연습합니다</Text>
+              <Text style={styles.categoryTitle}>Play</Text>
+              <Text style={styles.categorySubtitle}>Choose a saved score and practice</Text>
             </View>
           </Pressable>
-
           <Pressable style={styles.samplePracticeButton} onPress={practiceSampleScore}>
-            <Text style={styles.samplePracticeTitle}>테스트 파일 연습하기</Text>
-            <Text style={styles.samplePracticeSubtitle}>기본 리듬 테스트 악보로 연습합니다</Text>
+            <Text style={styles.samplePracticeTitle}>Practice Test Score</Text>
+            <Text style={styles.samplePracticeSubtitle}>Practice the built-in rhythm test score</Text>
           </Pressable>
-
           <Pressable style={styles.categoryButton} onPress={() => setActiveSection("focus")}>
             <Text style={styles.categoryNumber}>2</Text>
             <View style={styles.categoryTextBlock}>
-              <Text style={styles.categoryTitle}>취약 부분 연습하기</Text>
-              <Text style={styles.categorySubtitle}>자주 틀린 마디를 확인합니다</Text>
+              <Text style={styles.categoryTitle}>Weak Part Practice</Text>
+              <Text style={styles.categorySubtitle}>Review frequently missed measures</Text>
             </View>
           </Pressable>
-
           <Pressable style={styles.categoryButton} onPress={() => setActiveSection("achievement")}>
             <Text style={styles.categoryNumber}>3</Text>
             <View style={styles.categoryTextBlock}>
-              <Text style={styles.categoryTitle}>성취도 확인하기</Text>
-              <Text style={styles.categorySubtitle}>최근 연습 결과를 확인합니다</Text>
+              <Text style={styles.categoryTitle}>Achievement</Text>
+              <Text style={styles.categorySubtitle}>Check recent practice results</Text>
             </View>
           </Pressable>
           <Pressable style={styles.categoryButton} onPress={createDemoFocusResult}>
             <Text style={styles.categoryNumber}>4</Text>
             <View style={styles.categoryTextBlock}>
-              <Text style={styles.categoryTitle}>테스트 결과 만들기</Text>
-              <Text style={styles.categorySubtitle}>6마디를 취약 구간으로 저장합니다</Text>
+              <Text style={styles.categoryTitle}>Create Focus Test</Text>
+              <Text style={styles.categorySubtitle}>Save measure 6 as a weak section</Text>
             </View>
           </Pressable>
-
           <Pressable style={styles.categoryButton} onPress={createDemoAchievementResult}>
             <Text style={styles.categoryNumber}>5</Text>
             <View style={styles.categoryTextBlock}>
-              <Text style={styles.categoryTitle}>성취도 테스트 만들기</Text>
-              <Text style={styles.categorySubtitle}>가짜 연습 기록 3개를 저장합니다</Text>
+              <Text style={styles.categoryTitle}>Create Achievement Test</Text>
+              <Text style={styles.categorySubtitle}>Check recent practice results</Text>
             </View>
           </Pressable>
         </View>
       </SafeAreaView>
     );
   }
-
   if (activeSection === "library") {
     return (
       <SafeAreaView style={styles.root}>
@@ -967,14 +941,13 @@ export default function App() {
             <Text style={styles.backButtonText}>Home</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>연주할 곡 선택</Text>
+            <Text style={styles.title}>Choose Score</Text>
             <Text style={styles.subtitle}>{savedSongs.length} saved songs</Text>
           </View>
           <Pressable style={styles.importButton} onPress={importMusicXml}>
             <Text style={styles.importButtonText}>Import</Text>
           </Pressable>
         </View>
-
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           {savedSongs.length ? (
             savedSongs.map((song) => (
@@ -990,19 +963,17 @@ export default function App() {
             ))
           ) : (
             <Text style={styles.placeholderText}>
-              아직 저장된 곡이 없습니다. Import로 MusicXML 파일을 추가하세요.
+              No saved songs yet. Import a MusicXML file to add one.
             </Text>
           )}
-
           <Pressable style={styles.samplePracticeButton} onPress={practiceSampleScore}>
-            <Text style={styles.samplePracticeTitle}>테스트 파일 연습하기</Text>
-            <Text style={styles.samplePracticeSubtitle}>기본 리듬 테스트 악보로 연습합니다</Text>
+            <Text style={styles.samplePracticeTitle}>Practice Test Score</Text>
+            <Text style={styles.samplePracticeSubtitle}>Practice the built-in rhythm test score</Text>
           </Pressable>
         </ScrollView>
       </SafeAreaView>
     );
   }
-
   if (activeSection === "focus") {
     return (
       <SafeAreaView style={styles.root}>
@@ -1015,7 +986,6 @@ export default function App() {
             <Text style={styles.subtitle}>{songTitle}</Text>
           </View>
         </View>
-
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           <Text style={styles.placeholderTitle}>Weak Measures</Text>
           {focusMeasures.length ? (
@@ -1031,6 +1001,12 @@ export default function App() {
                 >
                   <Text style={styles.focusMeasureButtonText}>Show Score</Text>
                 </Pressable>
+                <Pressable
+                  style={styles.focusMeasureButton}
+                  onPress={() => practiceWeakMeasure(item.measure)}
+                >
+                  <Text style={styles.focusMeasureButtonText}>Practice</Text>
+                </Pressable>
               </View>
             ))
           ) : (
@@ -1040,7 +1016,6 @@ export default function App() {
       </SafeAreaView>
     );
   }
-
   if (false && activeSection === "focus") {
     return (
       <SafeAreaView style={styles.root}>
@@ -1049,29 +1024,26 @@ export default function App() {
             <Text style={styles.backButtonText}>Home</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>취약 부분 연습하기</Text>
+            <Text style={styles.title}>?????????낇뀘??????????????袁⑦꺙</Text>
             <Text style={styles.subtitle}>{songTitle}</Text>
           </View>
         </View>
-
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           <Text style={styles.placeholderTitle}>Focus Measures</Text>
           <Text style={styles.placeholderText}>
             {focusMeasures.length
               ? focusMeasures.map((item) => `M${item.measure} (${item.mistakeCount})`).join(" / ")
-              : "아직 저장된 취약 마디가 없습니다."}
+              : "????썹땟?㏓퉲????逆곷틳爰덂퐲????????꿔꺂???熬곣뵎???嶺? ????ㅿ폍??????딅젩."}
           </Text>
           <Pressable style={styles.primaryWideButton} onPress={() => setActiveSection("play")}>
-            <Text style={styles.primaryWideButtonText}>연주 화면으로 이동</Text>
+            <Text style={styles.primaryWideButtonText}>Go to Play Screen</Text>
           </Pressable>
         </ScrollView>
       </SafeAreaView>
     );
   }
-
   if (activeSection === "weakScore") {
     const reviewMeasure = currentNote?.measure ?? pendingFocusMeasure ?? measureFrom;
-
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
@@ -1088,7 +1060,6 @@ export default function App() {
             <Text style={styles.importButtonText}>List</Text>
           </Pressable>
         </View>
-
         <View style={styles.score}>
           <ScoreWebView
             key={`weak-score-${scoreViewVersion}`}
@@ -1123,7 +1094,6 @@ export default function App() {
             onMicUnavailable={() => {}}
           />
         </View>
-
         <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>
           <View style={styles.statusRow}>
             <Text style={styles.label}>Review</Text>
@@ -1145,7 +1115,6 @@ export default function App() {
       </SafeAreaView>
     );
   }
-
   if (activeSection === "achievement") {
     return (
       <SafeAreaView style={styles.root}>
@@ -1158,10 +1127,31 @@ export default function App() {
             <Text style={styles.subtitle}>{songTitle}</Text>
           </View>
         </View>
-
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           <Text style={styles.placeholderTitle}>Latest Result</Text>
           <Text style={styles.placeholderText}>{resultSummary}</Text>
+          <Text style={styles.placeholderTitle}>All Scores</Text>
+          {achievementSummaries.length ? (
+            achievementSummaries.map((summary) => (
+              <View key={summary.songId} style={styles.achievementRow}>
+                <View style={styles.achievementTextBlock}>
+                  <Text style={styles.achievementTitle}>{summary.title}</Text>
+                  <Text style={styles.achievementMeta}>
+                    {summary.sessionCount} sessions · latest{" "}
+                    {summary.latestIsMastered ? "MASTER" : "Not mastered"}
+                  </Text>
+                  <Text style={styles.achievementDate}>
+                    best wrong measures: {summary.bestWrongMeasureCount ?? "-"} · last:{" "}
+                    {summary.lastPracticedAt
+                      ? new Date(summary.lastPracticedAt).toLocaleString()
+                      : "not practiced"}
+                  </Text>
+                </View>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.placeholderText}>No saved score achievement data yet.</Text>
+          )}
           <Text style={styles.placeholderTitle}>Practice History</Text>
           {achievementSessions.length ? (
             achievementSessions.map((session, index) => (
@@ -1174,7 +1164,7 @@ export default function App() {
                     {session.isMastered ? "MASTER" : "Not mastered"}
                   </Text>
                   <Text style={styles.achievementMeta}>
-                    wrong measures {session.wrongMeasureCount} · wrong notes {session.wrongNoteCount}
+                    wrong measures {session.wrongMeasureCount} ??wrong notes {session.wrongNoteCount}
                   </Text>
                   <Text style={styles.achievementDate}>
                     {new Date(session.practicedAt).toLocaleString()}
@@ -1191,7 +1181,6 @@ export default function App() {
       </SafeAreaView>
     );
   }
-
   if (false && activeSection === "achievement") {
     return (
       <SafeAreaView style={styles.root}>
@@ -1200,24 +1189,22 @@ export default function App() {
             <Text style={styles.backButtonText}>Home</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>성취도 확인하기</Text>
+            <Text style={styles.title}>?嚥싲갭큔?????癲ル슢캉???????袁⑦꺙</Text>
             <Text style={styles.subtitle}>{songTitle}</Text>
           </View>
         </View>
-
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           <Text style={styles.placeholderTitle}>Latest Result</Text>
           <Text style={styles.placeholderText}>{resultSummary}</Text>
           <Text style={styles.placeholderTitle}>Master Rule</Text>
-          <Text style={styles.placeholderText}>틀린 마디가 3개 이하이면 MASTER로 처리됩니다.</Text>
+          <Text style={styles.placeholderText}>?????꿔꺂???熬곣뵎???嶺? 3?????ш끽維??????MASTER???꿔꺂??節뉖き???嶺뚮ㅎ????</Text>
           <Pressable style={styles.primaryWideButton} onPress={() => setActiveSection("play")}>
-            <Text style={styles.primaryWideButtonText}>연주 화면으로 이동</Text>
+            <Text style={styles.primaryWideButtonText}>Go to Play Screen</Text>
           </Pressable>
         </ScrollView>
       </SafeAreaView>
     );
   }
-
   return (
     <SafeAreaView style={styles.root}>
       <View style={styles.header}>
@@ -1225,7 +1212,7 @@ export default function App() {
           <Text style={styles.backButtonText}>Home</Text>
         </Pressable>
         <View style={styles.titleBlock}>
-          <Text style={styles.title}>연주하기</Text>
+          <Text style={styles.title}>???????????袁⑦꺙</Text>
           <Text style={styles.subtitle}>
             {songTitle} - {notes.length} parsed notes
           </Text>
@@ -1237,7 +1224,6 @@ export default function App() {
           <Text style={styles.sampleButtonText}>Test</Text>
         </Pressable>
       </View>
-
       <View style={styles.score}>
         <ScoreWebView
           key={`score-${scoreViewVersion}`}
@@ -1253,9 +1239,9 @@ export default function App() {
           onScoreReady={(payload) => {
             stopRenderTimeout();
             setScoreStatus(
-              `Ready · measures ${measureFrom}-${measureTo}/${measureCount} · ${notes.length} parsed notes · ${
+              `Ready ??measures ${measureFrom}-${measureTo}/${measureCount} ??${notes.length} parsed notes ??${
                 payload?.svgCount ?? 0
-              } svg · ${payload?.height ?? 0}px · ${payload?.renderMode ?? layoutMode}`
+              } svg ??${payload?.height ?? 0}px ??${payload?.renderMode ?? layoutMode}`
             );
           }}
           onScoreError={(message) => {
@@ -1287,7 +1273,6 @@ export default function App() {
           }}
         />
       </View>
-
       <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>
         <View style={styles.toolbar}>
           <Pressable
@@ -1312,7 +1297,6 @@ export default function App() {
             </Text>
           </Pressable>
         </View>
-
         <View style={styles.pageControls}>
           <Pressable
             style={[styles.pageButton, scorePage <= 1 && styles.disabledButton]}
@@ -1322,7 +1306,8 @@ export default function App() {
             <Text style={styles.pageButtonText}>Prev</Text>
           </Pressable>
           <Text style={styles.pageText}>
-            Measures {measureFrom}-{measureTo} · Page {scorePage}/{totalMeasurePages}
+            Page {scorePage}/{totalMeasurePages} - M{measureFrom}-{pageMeasureTo}
+            {hasPreviewMeasures ? ` / 다음 페이지의 첫 마디: M${previewMeasureFrom}` : ""}
           </Text>
           <Pressable
             style={[styles.pageButton, scorePage >= totalMeasurePages && styles.disabledButton]}
@@ -1332,7 +1317,6 @@ export default function App() {
             <Text style={styles.pageButtonText}>Next</Text>
           </Pressable>
         </View>
-
         <View style={styles.analysisControls}>
           <Pressable
             style={[styles.analysisButton, (isListening || micStarting) && styles.disabledButton]}
@@ -1354,22 +1338,17 @@ export default function App() {
             <Text style={styles.resumeButtonText}>Resume</Text>
           </Pressable>
           <Pressable style={styles.stopButton} onPress={stopAnalysis}>
-            <Text style={styles.stopButtonText}>Pause</Text>
+            <Text style={styles.stopButtonText}>Stop</Text>
           </Pressable>
         </View>
-
         <View style={styles.statusRow}>
           <Text style={styles.label}>Score</Text>
           <Text style={styles.value}>{scoreStatus}</Text>
         </View>
         <View style={styles.statusRow}>
-          <Text style={styles.label}>Target</Text>
+          <Text style={styles.label}>Next Note</Text>
           <Text style={styles.value}>
-            {currentNote
-              ? `${currentNote.step}${currentNote.alter ? "#" : ""}${currentNote.octave} · measure ${
-                  currentNote.measure
-                }`
-              : "--"}
+            {currentNote ? `${currentTargetLabel} - measure ${currentNote.measure}` : "--"}
           </Text>
         </View>
         <View style={styles.statusRow}>
@@ -1392,7 +1371,7 @@ export default function App() {
           <Text style={styles.label}>Analysis</Text>
           <Text style={styles.value}>
             {countdown ? `${analysisStatus}` : `${analysisStatus}${
-              noteColorAvailable ? "" : " · color off"
+              noteColorAvailable ? "" : " ??color off"
             }`}
           </Text>
         </View>
@@ -1412,7 +1391,6 @@ export default function App() {
     </SafeAreaView>
   );
 }
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -1698,6 +1676,50 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 13,
     fontWeight: "900",
+  },
+  achievementRow: {
+    minHeight: 86,
+    borderRadius: 8,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+  },
+  achievementBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2f5f8f",
+  },
+  achievementBadgeText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  achievementTextBlock: {
+    flex: 1,
+  },
+  achievementTitle: {
+    color: "#1f2a25",
+    fontSize: 17,
+    fontWeight: "900",
+  },
+  achievementMeta: {
+    marginTop: 4,
+    color: "#66736b",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  achievementDate: {
+    marginTop: 3,
+    color: "#7c8780",
+    fontSize: 12,
+    fontWeight: "700",
   },
   deleteSongButton: {
     minHeight: 72,
