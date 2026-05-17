@@ -146,6 +146,18 @@ export type SongPracticeSessionSummary = {
   isMastered: boolean;
 };
 
+export type SongAchievementSummary = {
+  songId: string;
+  title: string;
+  sessionCount: number;
+  lastPracticedAt: string | null;
+  latestWrongMeasureCount: number | null;
+  latestWrongNoteCount: number | null;
+  latestIsMastered: boolean;
+  bestWrongMeasureCount: number | null;
+  masteredCount: number;
+};
+
 export function getSessionsForSong(songId: string, limit = 10): SongPracticeSessionSummary[] {
   return db.getAllSync<{
     id: string;
@@ -171,4 +183,60 @@ export function getSessionsForSong(songId: string, limit = 10): SongPracticeSess
     wrongNoteCount: session.wrong_note_count,
     isMastered: Boolean(session.is_mastered),
   }));
+}
+
+export function getMistakeNoteIndicesForSongMeasure(songId: string, measure: number) {
+  return db.getAllSync<{ note_index: number }>(
+    `
+    SELECT DISTINCT note_index
+    FROM practice_mistakes
+    WHERE song_id = ? AND measure = ?
+    ORDER BY note_index ASC
+    `,
+    [songId, measure]
+  ).map((row) => row.note_index);
+}
+
+export function getSongAchievementSummaries(): SongAchievementSummary[] {
+  const songs = db.getAllSync<{ id: string; title: string }>(
+    `
+    SELECT id, title
+    FROM songs
+    WHERE xml_content IS NOT NULL AND xml_content != ''
+    ORDER BY updated_at DESC
+    `
+  );
+
+  return songs.map((song) => {
+    const aggregate = db.getFirstSync<{
+      session_count: number;
+      last_practiced_at: string | null;
+      best_wrong_measure_count: number | null;
+      mastered_count: number;
+    }>(
+      `
+      SELECT
+        COUNT(*) AS session_count,
+        MAX(practiced_at) AS last_practiced_at,
+        MIN(wrong_measure_count) AS best_wrong_measure_count,
+        SUM(is_mastered) AS mastered_count
+      FROM practice_sessions
+      WHERE song_id = ?
+      `,
+      [song.id]
+    );
+    const latest = getLatestSessionForSong(song.id);
+
+    return {
+      songId: song.id,
+      title: song.title,
+      sessionCount: aggregate?.session_count ?? 0,
+      lastPracticedAt: aggregate?.last_practiced_at ?? null,
+      latestWrongMeasureCount: latest?.wrong_measure_count ?? null,
+      latestWrongNoteCount: latest?.wrong_note_count ?? null,
+      latestIsMastered: Boolean(latest?.is_mastered),
+      bestWrongMeasureCount: aggregate?.best_wrong_measure_count ?? null,
+      masteredCount: aggregate?.mastered_count ?? 0,
+    };
+  });
 }
