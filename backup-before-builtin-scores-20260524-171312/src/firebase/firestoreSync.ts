@@ -2,10 +2,6 @@ import { doc, getFirestore, serverTimestamp, setDoc } from "firebase/firestore";
 import { db } from "../db/sqlite";
 import { getFirebaseApp } from "./firebaseApp";
 
-export function getFirebaseFirestore() {
-  return getFirestore(getFirebaseApp());
-}
-
 type DirtySessionRow = {
   id: string;
   song_id: string;
@@ -30,7 +26,7 @@ type DirtyMistakeRow = {
 };
 
 export async function syncDirtyPracticeData(uid: string) {
-  const firestore = getFirebaseFirestore();
+  const firestore = getFirestore(getFirebaseApp());
   const syncedAt = new Date().toISOString();
 
   const sessions = db.getAllSync<DirtySessionRow>(

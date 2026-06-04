@@ -1,16 +1,12 @@
 import { getDownloadURL, getStorage, ref, uploadString } from "firebase/storage";
 import { getFirebaseApp } from "./firebaseApp";
 
-export function getFirebaseStorage() {
-  return getStorage(getFirebaseApp());
-}
-
 export async function uploadMusicXml(params: {
   uid: string;
   songId: string;
   xml: string;
 }) {
-  const storage = getFirebaseStorage();
+  const storage = getStorage(getFirebaseApp());
   const storagePath = `users/${params.uid}/musicxml/${params.songId}.musicxml`;
   const fileRef = ref(storage, storagePath);
 
@@ -22,9 +18,4 @@ export async function uploadMusicXml(params: {
     storagePath,
     downloadUrl: await getDownloadURL(fileRef),
   };
-}
-
-export async function getMusicXmlDownloadUrl(storagePath: string) {
-  const storage = getFirebaseStorage();
-  return getDownloadURL(ref(storage, storagePath));
 }

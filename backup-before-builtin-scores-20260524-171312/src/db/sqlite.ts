@@ -26,7 +26,6 @@ export function initDb() {
       wrong_measure_count INTEGER NOT NULL,
       wrong_note_count INTEGER NOT NULL,
       is_mastered INTEGER NOT NULL,
-      audio_uri TEXT,
       synced_at TEXT,
       dirty INTEGER NOT NULL DEFAULT 1
     );
@@ -64,12 +63,6 @@ export function initDb() {
 
   try {
     db.execSync("ALTER TABLE songs ADD COLUMN xml_content TEXT;");
-  } catch {
-    // Existing databases already have this column.
-  }
-
-  try {
-    db.execSync("ALTER TABLE practice_sessions ADD COLUMN audio_uri TEXT;");
   } catch {
     // Existing databases already have this column.
   }

@@ -239,7 +239,7 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
   let index = 0;
   const notes: PracticeNote[] = [];
 
-  for (const measureNode of expandRepeats(measures)) {
+  for (const measureNode of measures) {
     const measure = Number(attrValue(measureNode, "number") ?? 0);
     const measureStartMs = globalCursorMs;
     let localCursorMs = 0;

@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Guitar Practice MVP",
+    "slug": "guitar-practice-mvp",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "The app listens to single guitar notes during practice."
+      }
+    },
+    "android": {
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-document-picker",
+      "expo-audio"
+    ]
+  }
+}

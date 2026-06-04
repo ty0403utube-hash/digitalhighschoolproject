@@ -61,17 +61,14 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     let micReadySent = false;
     let smoothedRms = 0;
     let lastOnsetAt = 0;
-    let scoreTapHandlersInstalled = false;
-    let lastScoreTapSentAt = 0;
     const PITCH_BUFFER_SIZE = 4096;
     const MIN_PITCH_HZ = 45;
     const MAX_PITCH_HZ = 1600;
-    const MIN_RMS = 0.0009;
-    const MIN_PITCH_CLARITY_TO_SEND = 0.16;
+    const MIN_RMS = 0.0012;
     const MIN_ONSET_RMS = 0.004;
-    const ONSET_RATIO = 1.6;
+    const ONSET_RATIO = 1.75;
     const ONSET_WINDOW_MS = 160;
-    const YIN_THRESHOLD = 0.24;
+    const YIN_THRESHOLD = 0.2;
 
     function send(type, payload) {
       window.ReactNativeWebView.postMessage(JSON.stringify({ type, payload }));
@@ -102,12 +99,11 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
       const usePageLayout = layoutMode !== "flow";
       const xmlForRange = sliceMusicXmlByMeasureRange(musicXml, measureFrom, measureTo);
-      const xmlForPagedScroll = addPageBreaksEveryNMeasures(xmlForRange, 16);
       const xmlForFlow = stripFlowLayoutBreaks(xmlForRange);
       const attempts = [
         {
           label: "range",
-          xml: usePageLayout ? xmlForPagedScroll : xmlForFlow,
+          xml: usePageLayout ? xmlForRange : xmlForFlow,
           usePageLayout
         },
         {
@@ -177,19 +173,10 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       });
 
       await osmd.load(xmlToRender);
-      if (usePageLayout && osmd.EngravingRules) {
-        osmd.EngravingRules.RenderXMeasuresPerLineAkaSystem = 4;
-        osmd.EngravingRules.RenderXMeasuresPerLineAkaSystemForEachLine = 4;
-        osmd.EngravingRules.PageTopMargin = 8;
-        osmd.EngravingRules.PageBottomMargin = 8;
-      }
       osmd.Zoom = 0.9;
       osmd.render();
       try {
         buildNoteMap(noteIndexOffset, useLowestChordNoteOnly);
-        aliasRepeatedNoteMap(xmlToRender, noteIndexOffset, useLowestChordNoteOnly);
-        createNoteTouchTargets();
-        installScoreTapHandlers();
       } catch (error) {
         noteMap = new Map();
         noteLabelMap = new Map();
@@ -221,28 +208,6 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     function countMeasures(musicXml) {
       const matches = musicXml.match(/<measure\\b/g);
       return matches ? matches.length : 0;
-    }
-
-    function addPageBreaksEveryNMeasures(musicXml, interval) {
-      const parser = new DOMParser();
-      const serializer = new XMLSerializer();
-      const doc = parser.parseFromString(musicXml, "application/xml");
-      const parserError = doc.querySelector("parsererror");
-
-      if (parserError) {
-        return musicXml;
-      }
-
-      const measures = Array.from(doc.querySelectorAll("part > measure"));
-      measures.forEach((measure, index) => {
-        if (index === 0 || index % interval !== 0) return;
-
-        const print = doc.createElement("print");
-        print.setAttribute("new-page", "yes");
-        measure.insertBefore(print, measure.firstChild);
-      });
-
-      return serializer.serializeToString(doc);
     }
 
     function stripFlowLayoutBreaks(musicXml) {
@@ -318,13 +283,6 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       return node.localName || node.nodeName;
     }
 
-    function parseXmlDocument(musicXml) {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(musicXml, "application/xml");
-      const parserError = doc.querySelector("parsererror");
-      return parserError ? null : doc;
-    }
-
     function buildNoteMap(noteIndexOffset, useLowestChordNoteOnly) {
       const iterator = osmd.Sheet.MusicPartManager.getIterator();
       let index = Number.isFinite(noteIndexOffset) ? noteIndexOffset : 0;
@@ -345,7 +303,6 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
             if (graphicalNote) {
               noteMap.set(String(index), graphicalNote);
               originalColors.set(String(index), "#111111");
-              attachNotePressHandler(index, graphicalNote);
               index += 1;
             }
           }
@@ -373,286 +330,12 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
           if (graphicalNote) {
             noteMap.set(String(index), graphicalNote);
             originalColors.set(String(index), "#111111");
-            attachNotePressHandler(index, graphicalNote);
             index += 1;
           }
         }
 
         iterator.moveToNext();
       }
-    }
-
-    function aliasRepeatedNoteMap(musicXml, noteIndexOffset, useLowestChordNoteOnly) {
-      const doc = parseXmlDocument(musicXml);
-      if (!doc) return;
-
-      const part = doc.querySelector("part");
-      if (!part) return;
-
-      const measures = Array.from(part.childNodes).filter((child) => {
-        return child.nodeType === 1 && getNodeName(child) === "measure";
-      });
-      if (!measures.length || !hasBackwardRepeat(measures)) return;
-
-      const visualSlotsByMeasure = new Map();
-      let visualIndex = Number.isFinite(noteIndexOffset) ? noteIndexOffset : 0;
-
-      measures.forEach((measure, measureIndex) => {
-        const count = countPlayableNoteSlots(measure, useLowestChordNoteOnly);
-        const slots = [];
-        for (let offset = 0; offset < count; offset += 1) {
-          slots.push(visualIndex + offset);
-        }
-        visualSlotsByMeasure.set(measureIndex, slots);
-        visualIndex += count;
-      });
-
-      const expandedMeasureIndices = expandRepeatMeasureIndices(measures);
-      let timelineIndex = Number.isFinite(noteIndexOffset) ? noteIndexOffset : 0;
-
-      for (const measureIndex of expandedMeasureIndices) {
-        const slots = visualSlotsByMeasure.get(measureIndex) || [];
-        for (const sourceIndex of slots) {
-          const sourceKey = String(sourceIndex);
-          const targetKey = String(timelineIndex);
-          const graphicalNote = noteMap.get(sourceKey);
-
-          if (graphicalNote && !noteMap.has(targetKey)) {
-            noteMap.set(targetKey, graphicalNote);
-            originalColors.set(targetKey, originalColors.get(sourceKey) || "#111111");
-          }
-
-          timelineIndex += 1;
-        }
-      }
-    }
-
-    function countPlayableNoteSlots(measure, useLowestChordNoteOnly) {
-      let count = 0;
-
-      for (const child of Array.from(measure.childNodes)) {
-        if (child.nodeType !== 1 || getNodeName(child) !== "note") continue;
-
-        const hasPitchOrRest = child.querySelector("pitch, rest");
-        if (!hasPitchOrRest) continue;
-
-        const isChordTone = child.querySelector("chord") !== null;
-
-        if (useLowestChordNoteOnly) {
-          if (!isChordTone) {
-            count += 1;
-          }
-          continue;
-        }
-
-        count += 1;
-      }
-
-      return count;
-    }
-
-    function hasBackwardRepeat(measures) {
-      return measures.some((measure) => measureHasRepeatDirection(measure, "backward"));
-    }
-
-    function expandRepeatMeasureIndices(measures) {
-      const expanded = [];
-      let repeatStartIndex = 0;
-
-      for (let index = 0; index < measures.length; index += 1) {
-        const measure = measures[index];
-        expanded.push(index);
-
-        if (measureHasRepeatDirection(measure, "forward")) {
-          repeatStartIndex = index;
-        }
-
-        if (measureHasRepeatDirection(measure, "backward")) {
-          const times = getBackwardRepeatTimes(measure);
-          for (let passNumber = 2; passNumber <= times; passNumber += 1) {
-            for (let repeatedIndex = repeatStartIndex; repeatedIndex <= index; repeatedIndex += 1) {
-              if (shouldPlayRepeatedMeasure(measures[repeatedIndex], passNumber)) {
-                expanded.push(repeatedIndex);
-              }
-            }
-          }
-          repeatStartIndex = index + 1;
-        }
-      }
-
-      return expanded;
-    }
-
-    function measureHasRepeatDirection(measure, direction) {
-      return Array.from(measure.children).some((child) => {
-        if (getNodeName(child) !== "barline") return false;
-        const repeat = Array.from(child.children).find((barlineChild) => {
-          return getNodeName(barlineChild) === "repeat";
-        });
-        return repeat ? repeat.getAttribute("direction") === direction : false;
-      });
-    }
-
-    function getBackwardRepeatTimes(measure) {
-      for (const child of Array.from(measure.children)) {
-        if (getNodeName(child) !== "barline") continue;
-        const repeat = Array.from(child.children).find((barlineChild) => {
-          return getNodeName(barlineChild) === "repeat";
-        });
-        if (repeat && repeat.getAttribute("direction") === "backward") {
-          const times = Number(repeat.getAttribute("times") || 2);
-          return Number.isFinite(times) && times > 1 ? Math.floor(times) : 2;
-        }
-      }
-
-      return 2;
-    }
-
-    function shouldPlayRepeatedMeasure(measure, passNumber) {
-      const endings = getEndingNumbers(measure);
-      return endings.size === 0 || endings.has(passNumber);
-    }
-
-    function getEndingNumbers(measure) {
-      const numbers = new Set();
-
-      for (const child of Array.from(measure.children)) {
-        if (getNodeName(child) !== "barline") continue;
-        const ending = Array.from(child.children).find((barlineChild) => {
-          return getNodeName(barlineChild) === "ending";
-        });
-        const rawNumber = ending ? ending.getAttribute("number") : "";
-        if (!rawNumber) continue;
-
-        rawNumber.split(",").forEach((part) => {
-          const value = Number(part.trim());
-          if (Number.isFinite(value) && value > 0) {
-            numbers.add(Math.floor(value));
-          }
-        });
-      }
-
-      return numbers;
-    }
-
-    function attachNotePressHandler(index, graphicalNote) {
-      const element = getGraphicalNoteElement(graphicalNote);
-      if (!element) return;
-      element.style.cursor = "pointer";
-      element.style.pointerEvents = "auto";
-      element.addEventListener("click", function(event) {
-        event.preventDefault();
-        event.stopPropagation();
-        send("NOTE_PRESS", { index });
-      });
-    }
-
-    function createNoteTouchTargets() {
-      for (const target of Array.from(document.querySelectorAll("[data-note-touch-target]"))) {
-        target.parentNode && target.parentNode.removeChild(target);
-      }
-
-      for (const [key, note] of noteMap.entries()) {
-        const index = Number(key);
-        const element = getGraphicalNoteElement(note);
-        const anchor = getNoteAnchor(note);
-        const svg = (element && element.ownerSVGElement) || (anchor && anchor.svg);
-        if (!svg) continue;
-
-        let x = anchor ? anchor.x : 0;
-        let y = anchor ? anchor.y : 0;
-        let width = 28;
-        let height = 34;
-
-        if (element && typeof element.getBBox === "function") {
-          try {
-            const box = element.getBBox();
-            x = box.x + box.width / 2;
-            y = box.y + box.height / 2;
-            width = Math.max(28, box.width + 22);
-            height = Math.max(34, box.height + 24);
-          } catch (error) {
-            // Use anchor fallback.
-          }
-        }
-
-        const hit = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        hit.setAttribute("data-note-touch-target", key);
-        hit.setAttribute("x", String(x - width / 2));
-        hit.setAttribute("y", String(y - height / 2));
-        hit.setAttribute("width", String(width));
-        hit.setAttribute("height", String(height));
-        hit.setAttribute("rx", "6");
-        hit.setAttribute("fill", "rgba(255, 160, 0, 0.01)");
-        hit.setAttribute("stroke", "none");
-        hit.setAttribute("pointer-events", "all");
-        hit.style.cursor = "pointer";
-        hit.addEventListener("click", function(event) {
-          event.preventDefault();
-          event.stopPropagation();
-          send("NOTE_PRESS", { index });
-        });
-        hit.addEventListener("touchend", function(event) {
-          event.preventDefault();
-          event.stopPropagation();
-          send("NOTE_PRESS", { index });
-        });
-        svg.appendChild(hit);
-      }
-    }
-
-    function installScoreTapHandlers() {
-      if (scoreTapHandlersInstalled) return;
-      scoreTapHandlersInstalled = true;
-      const score = document.getElementById("score");
-      if (!score) return;
-
-      function handlePoint(clientX, clientY) {
-        const now = Date.now();
-        if (now - lastScoreTapSentAt < 180) return;
-
-        const nearest = findNearestNoteToClientPoint(clientX, clientY);
-        if (!nearest) return;
-
-        lastScoreTapSentAt = now;
-        send("NOTE_PRESS", { index: nearest.index });
-      }
-
-      score.addEventListener("click", function(event) {
-        handlePoint(event.clientX, event.clientY);
-      });
-
-      score.addEventListener("touchend", function(event) {
-        const touch = event.changedTouches && event.changedTouches[0];
-        if (!touch) return;
-        handlePoint(touch.clientX, touch.clientY);
-      }, { passive: true });
-    }
-
-    function findNearestNoteToClientPoint(clientX, clientY) {
-      let best = null;
-      for (const [key, note] of noteMap.entries()) {
-        const element = getGraphicalNoteElement(note);
-        if (!element || typeof element.getBoundingClientRect !== "function") continue;
-
-        try {
-          const rect = element.getBoundingClientRect();
-          const centerX = rect.left + rect.width / 2;
-          const centerY = rect.top + rect.height / 2;
-          const distance = Math.hypot(centerX - clientX, centerY - clientY);
-          if (!best || distance < best.distance) {
-            best = { index: Number(key), distance };
-          }
-        } catch (error) {
-          // Ignore notes without measurable SVG bounds.
-        }
-      }
-
-      if (!best || best.distance > 72) {
-        return null;
-      }
-
-      return best;
     }
 
     function getGraphicalY(graphicalNote) {
@@ -718,32 +401,28 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       const anchor = getNoteAnchor(note);
       if (!anchor || !anchor.svg) return;
 
-      if (!text) {
-        const key = String(index);
-        const existing = noteLabelMap.get(key);
-        if (existing && existing.parentNode) {
-          existing.parentNode.removeChild(existing);
-        }
-        noteLabelMap.delete(key);
-        return;
-      }
-
-      const svg = anchor.svg;
       const key = String(index);
       const existing = noteLabelMap.get(key);
       if (existing && existing.parentNode) {
         existing.parentNode.removeChild(existing);
       }
+
+      if (!text) {
+        noteLabelMap.delete(key);
+        return;
+      }
+
+      const svg = anchor.svg;
       const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
       group.setAttribute("data-practice-label", key);
       group.setAttribute("pointer-events", "none");
 
       const labelText = document.createElementNS("http://www.w3.org/2000/svg", "text");
       labelText.setAttribute("x", String(anchor.x));
-      labelText.setAttribute("y", String(anchor.y - 4));
+      labelText.setAttribute("y", String(anchor.y - 9));
       labelText.setAttribute("text-anchor", "middle");
-      labelText.setAttribute("font-size", "10");
-      labelText.setAttribute("font-weight", "900");
+      labelText.setAttribute("font-size", "8");
+      labelText.setAttribute("font-weight", "800");
       labelText.setAttribute("font-family", "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif");
       labelText.setAttribute("fill", color || "#1f2a25");
       labelText.setAttribute("paint-order", "stroke");
@@ -762,24 +441,25 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       if (element && element.ownerSVGElement) {
         try {
           const box = element.getBBox();
-          if (
-            !Number.isFinite(box.x) ||
-            !Number.isFinite(box.y) ||
-            (Math.abs(box.x) < 1 && Math.abs(box.y) < 1 && box.width <= 1 && box.height <= 1)
-          ) {
-            return null;
-          }
           return {
             svg: element.ownerSVGElement,
             x: box.x + box.width / 2,
             y: box.y
           };
         } catch (error) {
-          return null;
+          // Fall back to OSMD position data below.
         }
       }
 
-      return null;
+      const svg = getScoreSvg();
+      if (!svg || !note) return null;
+      const positionAndShape = note.PositionAndShape || {};
+      const absolutePosition = positionAndShape.AbsolutePosition || {};
+      const relativePosition = positionAndShape.RelativePosition || {};
+      const x = Number(absolutePosition.x || 0) + Number(relativePosition.x || 0);
+      const y = Number(absolutePosition.y || 0) + Number(relativePosition.y || 0);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { svg, x, y };
     }
 
     function getGraphicalNoteElement(note) {
@@ -811,13 +491,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
       if (element && typeof element.getBoundingClientRect === "function") {
         const rect = element.getBoundingClientRect();
-        const comfortableTop = window.innerHeight * 0.24;
-        const comfortableBottom = window.innerHeight * 0.78;
-        if (rect.top >= comfortableTop && rect.bottom <= comfortableBottom) {
-          return;
-        }
-
-        const targetTop = window.scrollY + rect.top - window.innerHeight * 0.32;
+        const targetTop = window.scrollY + rect.top - window.innerHeight * 0.42;
         const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
         window.scrollTo({
           top: Math.max(0, Math.min(maxScroll, targetTop)),
@@ -832,14 +506,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       const svgRect = anchor.svg.getBoundingClientRect();
       const viewBox = anchor.svg.viewBox && anchor.svg.viewBox.baseVal;
       const scaleY = viewBox && viewBox.height ? svgRect.height / viewBox.height : 1;
-      const noteTop = svgRect.top + anchor.y * scaleY;
-      const comfortableTop = window.innerHeight * 0.24;
-      const comfortableBottom = window.innerHeight * 0.78;
-      if (noteTop >= comfortableTop && noteTop <= comfortableBottom) {
-        return;
-      }
-
-      const targetTop = window.scrollY + noteTop - window.innerHeight * 0.32;
+      const targetTop = window.scrollY + svgRect.top + anchor.y * scaleY - window.innerHeight * 0.42;
       const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
       window.scrollTo({
         top: Math.max(0, Math.min(maxScroll, targetTop)),
@@ -877,9 +544,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     }
 
     function setNoteProgress(index, progress) {
-      const note = noteMap.get(String(index));
-      const element = getGraphicalNoteElement(note);
-      const svg = element && element.ownerSVGElement;
+      const svg = getScoreSvg();
       if (!svg) return;
 
       const p = Math.max(0, Math.min(1, Number(progress) || 0));
@@ -927,12 +592,6 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
         }
       }
       noteLabelMap = new Map();
-    }
-
-    function resetNoteColors() {
-      for (const [index, color] of originalColors.entries()) {
-        setNoteColor(index, color);
-      }
     }
 
     function sendScrollInfo() {
@@ -1074,7 +733,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       const clarity = result.clarity;
 
       if (
-        clarity > MIN_PITCH_CLARITY_TO_SEND &&
+        clarity > 0.24 &&
         hz > MIN_PITCH_HZ &&
         hz < MAX_PITCH_HZ
       ) {
@@ -1234,7 +893,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
           }
         }
 
-        if (bestTau < 0 || bestValue > 0.42) {
+        if (bestTau < 0 || bestValue > 0.34) {
           return { hz: 0, clarity: Math.max(0, 1 - bestValue) };
         }
       }
@@ -1298,10 +957,6 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
         if (msg.type === "RESET_SCORE") {
           resetScore();
-        }
-
-        if (msg.type === "RESET_NOTE_COLORS") {
-          resetNoteColors();
         }
 
         if (msg.type === "SCROLL_SCORE_PAGE") {

@@ -14,15 +14,6 @@ function isMusicXmlPath(path: string) {
 
 export async function extractMusicXmlFromMxl(base64: string) {
   const zip = await JSZip.loadAsync(base64, { base64: true });
-  return extractMusicXmlFromZip(zip);
-}
-
-export async function extractMusicXmlFromMxlBytes(bytes: ArrayBuffer) {
-  const zip = await JSZip.loadAsync(bytes);
-  return extractMusicXmlFromZip(zip);
-}
-
-async function extractMusicXmlFromZip(zip: JSZip) {
   const container = zip.file("META-INF/container.xml");
 
   if (container) {

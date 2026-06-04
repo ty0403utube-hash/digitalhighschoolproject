@@ -54,35 +54,9 @@ function findFirstNode(nodes: OrderedXmlNode[], name: string): OrderedXmlNode | 
   return undefined;
 }
 
-function safePositiveNumber(value: number, fallback: number) {
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function getQuarterNoteMs(bpm: number) {
-  return 60000 / safePositiveNumber(bpm, 80);
-}
-
-function getDivisionMs(divisions: number, bpm: number) {
-  return getQuarterNoteMs(bpm) / safePositiveNumber(divisions, 1);
-}
-
-function quantizeMs(valueMs: number, quantumMs: number) {
-  if (!Number.isFinite(valueMs) || !Number.isFinite(quantumMs) || quantumMs <= 0) {
-    return 0;
-  }
-
-  return Math.max(0, Math.round(valueMs / quantumMs) * quantumMs);
-}
-
 function divisionsToMs(duration: number, divisions: number, bpm: number) {
-  const safeDivisions = safePositiveNumber(divisions, 1);
-  const safeDuration = Number.isFinite(duration) ? duration : 0;
-  const divisionMs = getDivisionMs(safeDivisions, bpm);
-  return quantizeMs(safeDuration * divisionMs, divisionMs);
-}
-
-function quantizeMusicTime(valueMs: number, divisions: number, bpm: number) {
-  return quantizeMs(valueMs, getDivisionMs(divisions, bpm));
+  const quarterNoteMs = 60000 / bpm;
+  return (duration / divisions) * quarterNoteMs;
 }
 
 function beatUnitToQuarterMultiplier(beatUnit: string | undefined) {
@@ -163,30 +137,6 @@ function backwardRepeatTimes(measureNode: OrderedXmlNode) {
   return 2;
 }
 
-function endingNumbers(measureNode: OrderedXmlNode) {
-  const numbers = new Set<number>();
-
-  for (const barline of childrenNamed(measureNode, "barline")) {
-    const ending = firstChild(barline, "ending");
-    const rawNumber = ending ? attrValue(ending, "number") : undefined;
-    if (!rawNumber) continue;
-
-    for (const part of String(rawNumber).split(",")) {
-      const value = Number(part.trim());
-      if (Number.isFinite(value) && value > 0) {
-        numbers.add(Math.floor(value));
-      }
-    }
-  }
-
-  return numbers;
-}
-
-function shouldPlayMeasureOnRepeatPass(measureNode: OrderedXmlNode, passNumber: number) {
-  const endings = endingNumbers(measureNode);
-  return endings.size === 0 || endings.has(passNumber);
-}
-
 function expandRepeats(measures: OrderedXmlNode[]) {
   const expanded: OrderedXmlNode[] = [];
   let repeatStartIndex = 0;
@@ -203,12 +153,8 @@ function expandRepeats(measures: OrderedXmlNode[]) {
       const times = backwardRepeatTimes(measure);
       const repeatedSection = measures.slice(repeatStartIndex, index + 1);
 
-      for (let passNumber = 2; passNumber <= times; passNumber += 1) {
-        for (const repeatedMeasure of repeatedSection) {
-          if (shouldPlayMeasureOnRepeatPass(repeatedMeasure, passNumber)) {
-            expanded.push(repeatedMeasure);
-          }
-        }
+      for (let repeatCount = 1; repeatCount < times; repeatCount += 1) {
+        expanded.push(...repeatedSection);
       }
 
       repeatStartIndex = index + 1;
@@ -229,7 +175,7 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
   const doc = parser.parse(xml) as OrderedXmlNode[];
   const score = findFirstNode(doc, "score-partwise") ?? findFirstNode(doc, "score-timewise");
   const part = score ? firstChild(score, "part") : undefined;
-  const measures = part ? childrenNamed(part, "measure") : [];
+  const measures = part ? expandRepeats(childrenNamed(part, "measure")) : [];
 
   let divisions = 1;
   let bpm = 80;
@@ -239,7 +185,7 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
   let index = 0;
   const notes: PracticeNote[] = [];
 
-  for (const measureNode of expandRepeats(measures)) {
+  for (const measureNode of measures) {
     const measure = Number(attrValue(measureNode, "number") ?? 0);
     const measureStartMs = globalCursorMs;
     let localCursorMs = 0;
@@ -278,13 +224,13 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
 
       if (name === "backup") {
         const { durationMs } = readDuration(child, divisions, bpm);
-        localCursorMs = quantizeMusicTime(Math.max(0, localCursorMs - durationMs), divisions, bpm);
+        localCursorMs = Math.max(0, localCursorMs - durationMs);
         continue;
       }
 
       if (name === "forward") {
         const { durationMs } = readDuration(child, divisions, bpm);
-        localCursorMs = quantizeMusicTime(localCursorMs + durationMs, divisions, bpm);
+        localCursorMs += durationMs;
         measureEndMs = Math.max(measureEndMs, localCursorMs);
         continue;
       }
@@ -295,16 +241,11 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
 
       const isChordTone = firstChild(child, "chord") !== undefined;
       const { durationDivisions, durationMs } = readDuration(child, divisions, bpm);
-      const noteStartMs = quantizeMusicTime(
-        isChordTone ? lastNoteStartMs : localCursorMs,
-        divisions,
-        bpm
-      );
+      const noteStartMs = isChordTone ? lastNoteStartMs : localCursorMs;
       const pitch = readPitch(child);
 
       if (pitch) {
         const candidate: PracticeNoteDraft = {
-          isRest: false,
           measure,
           step: pitch.step,
           alter: pitch.alter,
@@ -315,7 +256,7 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
           bpm,
           beats,
           beatType,
-          startMs: quantizeMusicTime(measureStartMs + noteStartMs, divisions, bpm),
+          startMs: measureStartMs + noteStartMs,
           durationMs,
         };
         if (useLowestChordNoteOnly) {
@@ -328,27 +269,11 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
         } else {
           candidates.push(candidate);
         }
-      } else if (firstChild(child, "rest")) {
-        candidates.push({
-          isRest: true,
-          measure,
-          step: "Rest",
-          alter: 0,
-          octave: 0,
-          midi: -1,
-          durationDivisions,
-          divisions,
-          bpm,
-          beats,
-          beatType,
-          startMs: quantizeMusicTime(measureStartMs + noteStartMs, divisions, bpm),
-          durationMs,
-        });
       }
 
       if (!isChordTone) {
         lastNoteStartMs = noteStartMs;
-        localCursorMs = quantizeMusicTime(localCursorMs + durationMs, divisions, bpm);
+        localCursorMs += durationMs;
         measureEndMs = Math.max(measureEndMs, localCursorMs);
       }
     }

@@ -8,7 +8,6 @@ type SavePracticeSessionInput = {
   wrongMeasureCount: number;
   wrongNoteCount: number;
   isMastered: boolean;
-  audioUri?: string | null;
 };
 
 function createId(prefix: string) {
@@ -20,7 +19,7 @@ function getAccuracy(totalNotes: number, wrongNoteCount: number) {
   return Math.max(0, Math.round(((totalNotes - wrongNoteCount) / totalNotes) * 100));
 }
 
-function getHighAccuracyStreakWithoutLowBreak(songId: string) {
+function hasThreeHighAccuracySessionsWithoutLowBreak(songId: string) {
   const recentSessions = db.getAllSync<{
     total_notes: number;
     wrong_note_count: number;
@@ -42,19 +41,15 @@ function getHighAccuracyStreakWithoutLowBreak(songId: string) {
     if (accuracy === null) continue;
     if (accuracy < 80) break;
     if (accuracy >= 90) highAccuracyCount += 1;
+    if (highAccuracyCount >= 3) return true;
   }
 
-  return highAccuracyCount;
-}
-
-function hasThreeHighAccuracySessionsWithoutLowBreak(songId: string) {
-  return getHighAccuracyStreakWithoutLowBreak(songId) >= 3;
+  return false;
 }
 
 export function savePracticeSession(input: SavePracticeSessionInput): SavedPracticeSession {
   const id = createId("session");
   const practicedAt = new Date().toISOString();
-  let isMastered = false;
 
   db.withTransactionSync(() => {
     db.runSync(
@@ -67,9 +62,8 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
         wrong_measure_count,
         wrong_note_count,
         is_mastered,
-        audio_uri,
         dirty
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
       `,
       [
         id,
@@ -78,8 +72,7 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
         input.totalNotes,
         input.wrongMeasureCount,
         input.wrongNoteCount,
-        0,
-        input.audioUri ?? null,
+        input.isMastered ? 1 : 0,
       ]
     );
 
@@ -113,12 +106,6 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
         ]
       );
     }
-
-    isMastered = hasThreeHighAccuracySessionsWithoutLowBreak(input.songId);
-    db.runSync("UPDATE practice_sessions SET is_mastered = ? WHERE id = ?", [
-      isMastered ? 1 : 0,
-      id,
-    ]);
   });
 
   return {
@@ -128,15 +115,8 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
     totalNotes: input.totalNotes,
     wrongMeasureCount: input.wrongMeasureCount,
     wrongNoteCount: input.wrongNoteCount,
-    isMastered,
+    isMastered: input.isMastered,
   };
-}
-
-export function clearPracticeHistoryForSong(songId: string) {
-  db.withTransactionSync(() => {
-    db.runSync("DELETE FROM practice_mistakes WHERE song_id = ?", [songId]);
-    db.runSync("DELETE FROM practice_sessions WHERE song_id = ?", [songId]);
-  });
 }
 
 export function getRecentSessions(limit = 20) {
@@ -161,10 +141,6 @@ export type FocusRange = {
   toMeasure: number;
   mistakeCount: number;
   noteCount: number;
-  errorRate?: number;
-  isVirtual?: boolean;
-  highlightNoteIndices?: number[];
-  mistakeNoteIndices?: number[];
 };
 
 export type WeakPracticeSession = {
@@ -181,28 +157,12 @@ export type WeakPracticeSession = {
 export function getFocusMeasuresForSong(songId: string, limit = 3): FocusMeasure[] {
   return db.getAllSync<FocusMeasure>(
     `
-    WITH recent_sessions AS (
-      SELECT id
-      FROM practice_sessions
-      WHERE song_id = ?
-      ORDER BY practiced_at DESC
-      LIMIT 3
-    ),
-    per_session_measure AS (
-      SELECT
-        pm.session_id,
-        pm.measure,
-        SUM(pm.wrong_count) AS sessionMistakeCount
-      FROM practice_mistakes pm
-      JOIN recent_sessions rs ON rs.id = pm.session_id
-      GROUP BY pm.session_id, pm.measure
-    )
     SELECT
       measure,
-      SUM(sessionMistakeCount) AS mistakeCount
-    FROM per_session_measure
+      SUM(wrong_count) AS mistakeCount
+    FROM practice_mistakes
+    WHERE song_id = ?
     GROUP BY measure
-    HAVING COUNT(DISTINCT session_id) >= 2
     ORDER BY mistakeCount DESC, measure ASC
     LIMIT ?
     `,
@@ -213,28 +173,12 @@ export function getFocusMeasuresForSong(songId: string, limit = 3): FocusMeasure
 export function getFocusRangesForSong(songId: string, limit = 5): FocusRange[] {
   const measures = db.getAllSync<FocusMeasure>(
     `
-    WITH recent_sessions AS (
-      SELECT id
-      FROM practice_sessions
-      WHERE song_id = ?
-      ORDER BY practiced_at DESC
-      LIMIT 3
-    ),
-    per_session_measure AS (
-      SELECT
-        pm.session_id,
-        pm.measure,
-        SUM(pm.wrong_count) AS sessionMistakeCount
-      FROM practice_mistakes pm
-      JOIN recent_sessions rs ON rs.id = pm.session_id
-      GROUP BY pm.session_id, pm.measure
-    )
     SELECT
       measure,
-      SUM(sessionMistakeCount) AS mistakeCount
-    FROM per_session_measure
+      SUM(wrong_count) AS mistakeCount
+    FROM practice_mistakes
+    WHERE song_id = ?
     GROUP BY measure
-    HAVING COUNT(DISTINCT session_id) >= 2
     ORDER BY measure ASC
     `,
     [songId]
@@ -262,46 +206,6 @@ export function getFocusRangesForSong(songId: string, limit = 5): FocusRange[] {
   return ranges
     .sort((a, b) => b.mistakeCount - a.mistakeCount || a.fromMeasure - b.fromMeasure)
     .slice(0, limit);
-}
-
-export type RecentFocusMistake = {
-  sessionId: string;
-  measure: number;
-  noteIndex: number;
-  mistakeCount: number;
-};
-
-export function getRecentPracticeSessionIdsForSong(songId: string, limit = 3) {
-  return db.getAllSync<{ id: string }>(
-    `
-    SELECT id
-    FROM practice_sessions
-    WHERE song_id = ?
-    ORDER BY practiced_at DESC
-    LIMIT ?
-    `,
-    [songId, limit]
-  ).map((session) => session.id);
-}
-
-export function getRecentFocusMistakesForSong(songId: string, sessionIds: string[]) {
-  if (!sessionIds.length) return [];
-
-  const placeholders = sessionIds.map(() => "?").join(", ");
-  return db.getAllSync<RecentFocusMistake>(
-    `
-    SELECT
-      session_id AS sessionId,
-      measure,
-      note_index AS noteIndex,
-      SUM(wrong_count) AS mistakeCount
-    FROM practice_mistakes
-    WHERE song_id = ? AND session_id IN (${placeholders})
-    GROUP BY session_id, measure, note_index
-    ORDER BY measure ASC, note_index ASC
-    `,
-    [songId, ...sessionIds]
-  );
 }
 
 export function getWeakPracticeSessionsForSong(songId: string, limit = 8): WeakPracticeSession[] {
@@ -361,16 +265,15 @@ export function getWeakPracticeSessionsForSong(songId: string, limit = 8): WeakP
 }
 
 export function getLatestSessionForSong(songId: string) {
-  const latest = db.getFirstSync<{
+  return db.getFirstSync<{
     total_notes: number;
     wrong_measure_count: number;
     wrong_note_count: number;
     is_mastered: number;
     practiced_at: string;
-    audio_uri: string | null;
   }>(
     `
-    SELECT total_notes, wrong_measure_count, wrong_note_count, is_mastered, practiced_at, audio_uri
+    SELECT total_notes, wrong_measure_count, wrong_note_count, is_mastered, practiced_at
     FROM practice_sessions
     WHERE song_id = ?
     ORDER BY practiced_at DESC
@@ -378,38 +281,6 @@ export function getLatestSessionForSong(songId: string) {
     `,
     [songId]
   );
-
-  if (!latest) return null;
-
-  return {
-    ...latest,
-    is_mastered: hasThreeHighAccuracySessionsWithoutLowBreak(songId) ? 1 : 0,
-  };
-}
-
-export function getLatestMistakeNoteIndicesForSong(songId: string) {
-  const latestSession = db.getFirstSync<{ id: string }>(
-    `
-    SELECT id
-    FROM practice_sessions
-    WHERE song_id = ?
-    ORDER BY practiced_at DESC
-    LIMIT 1
-    `,
-    [songId]
-  );
-
-  if (!latestSession) return [];
-
-  return db.getAllSync<{ note_index: number }>(
-    `
-    SELECT DISTINCT note_index
-    FROM practice_mistakes
-    WHERE session_id = ?
-    ORDER BY note_index ASC
-    `,
-    [latestSession.id]
-  ).map((row) => row.note_index);
 }
 
 export type SongPracticeSessionSummary = {
@@ -430,8 +301,6 @@ export type SongAchievementSummary = {
   latestWrongNoteCount: number | null;
   latestAccuracy: number | null;
   latestIsMastered: boolean;
-  highAccuracyStreak: number;
-  latestAudioUri: string | null;
   bestWrongMeasureCount: number | null;
   masteredCount: number;
   weakMeasures: FocusMeasure[];
@@ -527,8 +396,6 @@ export function getSongAchievementSummaries(): SongAchievementSummary[] {
       latestWrongNoteCount: latest?.wrong_note_count ?? null,
       latestAccuracy: latest ? getAccuracy(latest.total_notes, latest.wrong_note_count) : null,
       latestIsMastered: hasThreeHighAccuracySessionsWithoutLowBreak(song.id),
-      highAccuracyStreak: getHighAccuracyStreakWithoutLowBreak(song.id),
-      latestAudioUri: latest?.audio_uri ?? null,
       bestWrongMeasureCount: aggregate?.best_wrong_measure_count ?? null,
       masteredCount: aggregate?.mastered_count ?? 0,
       weakMeasures: getFocusMeasuresForSong(song.id, 3),

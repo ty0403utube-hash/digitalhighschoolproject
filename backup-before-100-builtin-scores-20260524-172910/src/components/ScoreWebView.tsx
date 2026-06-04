@@ -7,7 +7,6 @@ export type ScoreWebViewHandle = {
   setNoteColor: (index: number, color: string) => void;
   setNoteLabel: (index: number, text: string, color?: string) => void;
   setNoteProgress: (index: number, progress: number) => void;
-  resetNoteColors: () => void;
   scrollToNote: (index: number) => void;
   scrollScorePage: (direction: "prev" | "next") => void;
   startMic: () => void;
@@ -39,7 +38,6 @@ type Props = {
   onScrollInfo: (payload: { page: number; totalPages: number }) => void;
   onMicReady: () => void;
   onMicUnavailable: (message: string) => void;
-  onNotePress?: (payload: { index: number }) => void;
 };
 
 export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
@@ -59,7 +57,6 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
       onScrollInfo,
       onMicReady,
       onMicUnavailable,
-      onNotePress,
     },
     ref
   ) => {
@@ -100,9 +97,6 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
       },
       setNoteProgress(index: number, progress: number) {
         send("SET_NOTE_PROGRESS", { index, progress });
-      },
-      resetNoteColors() {
-        send("RESET_NOTE_COLORS");
       },
       scrollToNote(index: number) {
         send("SCROLL_TO_NOTE", { index });
@@ -184,10 +178,6 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
 
           if (msg.type === "MIC_UNAVAILABLE") {
             onMicUnavailable(msg.payload?.message ?? "Microphone is unavailable.");
-          }
-
-          if (msg.type === "NOTE_PRESS") {
-            onNotePress?.({ index: Number(msg.payload?.index) });
           }
         }}
       />

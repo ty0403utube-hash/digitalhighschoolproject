@@ -12,12 +12,17 @@ export async function pickMusicXmlFile() {
 
   const file = result.assets[0];
   const name = file.name ?? "Imported score";
+  const mimeType = file.mimeType ?? "";
+  const isLikelyMxl =
+    /\.(mxl|mxl\.zip)$/i.test(name) ||
+    mimeType.includes("musicxml") ||
+    mimeType.includes("zip") ||
+    mimeType.includes("octet-stream");
+
   let xml = "";
 
-  try {
+  if (!isLikelyMxl) {
     xml = await FileSystem.readAsStringAsync(file.uri);
-  } catch {
-    xml = "";
   }
 
   if (!xml.includes("<score-partwise") && !xml.includes("<score-timewise")) {
