@@ -1,21 +1,5 @@
 import { FirebaseApp, FirebaseOptions, getApps, initializeApp } from "firebase/app";
 
-type FirebaseConfigKey = keyof typeof firebaseConfig;
-
-export class FirebaseConfigError extends Error {
-  missingKeys: FirebaseConfigKey[];
-
-  constructor(missingKeys: FirebaseConfigKey[]) {
-    super(
-      `Firebase configuration is missing: ${missingKeys
-        .map((key) => firebaseEnvNames[key])
-        .join(", ")}`
-    );
-    this.name = "FirebaseConfigError";
-    this.missingKeys = missingKeys;
-  }
-}
-
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -24,6 +8,8 @@ const firebaseConfig = {
   messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
+
+type FirebaseConfigKey = keyof typeof firebaseConfig;
 
 const firebaseEnvNames: Record<FirebaseConfigKey, string> = {
   apiKey: "EXPO_PUBLIC_FIREBASE_API_KEY",
@@ -45,6 +31,20 @@ const placeholderValues = new Set([
 ]);
 
 let cachedApp: FirebaseApp | null = null;
+
+export class FirebaseConfigError extends Error {
+  missingKeys: FirebaseConfigKey[];
+
+  constructor(missingKeys: FirebaseConfigKey[]) {
+    super(
+      `Firebase configuration is missing: ${missingKeys
+        .map((key) => firebaseEnvNames[key])
+        .join(", ")}`
+    );
+    this.name = "FirebaseConfigError";
+    this.missingKeys = missingKeys;
+  }
+}
 
 export function getFirebaseConfigStatus() {
   const missingKeys = (Object.keys(firebaseConfig) as FirebaseConfigKey[]).filter((key) =>

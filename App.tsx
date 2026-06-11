@@ -10,7 +10,6 @@ import {
 import {
   Alert,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -22,15 +21,13 @@ import {
 } from "react-native";
 import { ScoreWebView, ScoreWebViewHandle } from "./src/components/ScoreWebView";
 import {
-  clearPracticeHistoryForSong,
+  clearPracticeMistakesForSongMeasureRange,
   FocusMeasure,
   FocusRange,
   getRecentFocusMistakesForSong,
   getRecentPracticeSessionIdsForSong,
   getLatestSessionForSong,
   getLatestMistakeNoteIndicesForSong,
-  getMistakeNoteIndicesForSongMeasure,
-  getMistakeNoteIndicesForSongMeasureRange,
   getSessionsForSong,
   getSongAchievementSummaries,
   getWeakPracticeSessionsForSong,
@@ -69,6 +66,7 @@ type AppSection =
   | "weakScore"
   | "achievement"
   | "tuner";
+type AchievementView = "all" | "recentMonth" | "mastered" | "progress" | "review";
 const PITCH_JUDGMENT = {
   toleranceCents: 70,
   nearMissCents: 120,
@@ -91,7 +89,8 @@ const ATTACK_JUDGMENT = {
 const FFT_JUDGMENT = {
   minPeakDb: -62,
 };
-const FIREBASE_AUTH_ENABLED = false;
+const DEFAULT_PRACTICE_BPM = 80;
+const FIREBASE_AUTH_ENABLED = true;
 const LOCAL_AUTH_USER = {
   name: "연습자",
   email: "local@practice.app",
@@ -146,7 +145,9 @@ export default function App() {
   const noteFeedbackRef = useRef<Map<number, NoteFeedback>>(new Map());
   const currentIndexRef = useRef(0);
   const isListeningRef = useRef(false);
+  const practiceBpmRef = useRef(DEFAULT_PRACTICE_BPM);
   const sessionMistakesRef = useRef<PracticeMistakeDraft[]>([]);
+  const sessionAttemptedEventKeysRef = useRef<Set<string>>(new Set());
   const sessionSavedRef = useRef(false);
   const [musicXml, setMusicXml] = useState(SAMPLE_MUSIC_XML);
   const [songTitle, setSongTitle] = useState("Sample Melody");
@@ -173,7 +174,12 @@ export default function App() {
   const [tunerHz, setTunerHz] = useState<number | null>(null);
   const [tunerClarity, setTunerClarity] = useState<number | null>(null);
   const [selectedTunerStringIndex, setSelectedTunerStringIndex] = useState(0);
-  const [practiceBpm, setPracticeBpm] = useState(80);
+  const [practiceBpm, setPracticeBpm] = useState(DEFAULT_PRACTICE_BPM);
+  const [practiceStats, setPracticeStats] = useState<{
+    accuracy: number | null;
+    correctNotes: number;
+    totalNotes: number;
+  }>({ accuracy: null, correctNotes: 0, totalNotes: 0 });
   const [focusMeasures, setFocusMeasures] = useState<FocusMeasure[]>([]);
   const [focusRanges, setFocusRanges] = useState<FocusRange[]>([]);
   const [weakPracticeSessions, setWeakPracticeSessions] = useState<WeakPracticeSession[]>([]);
@@ -184,7 +190,10 @@ export default function App() {
   const [achievementSummaries, setAchievementSummaries] = useState<SongAchievementSummary[]>([]);
   const [showAllMasteredSongs, setShowAllMasteredSongs] = useState(false);
   const [showAllInProgressSongs, setShowAllInProgressSongs] = useState(false);
-  const [achievementView, setAchievementView] = useState<"mastered" | "progress">("progress");
+  const [showAllPracticedSongs, setShowAllPracticedSongs] = useState(false);
+  const [showAllReviewSongs, setShowAllReviewSongs] = useState(false);
+  const [showAllRecentMonthSongs, setShowAllRecentMonthSongs] = useState(false);
+  const [achievementView, setAchievementView] = useState<AchievementView>("progress");
   const [selectedAchievementSongId, setSelectedAchievementSongId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [playReturnSection, setPlayReturnSection] = useState<"library" | "focus" | "home">("library");
@@ -205,10 +214,10 @@ export default function App() {
   const [weakMistakeNoteIndices, setWeakMistakeNoteIndices] = useState<number[]>([]);
   const [scoreViewVersion, setScoreViewVersion] = useState(0);
   const [showPracticeHighlights, setShowPracticeHighlights] = useState(false);
+  const [showPracticeSidePanel, setShowPracticeSidePanel] = useState(false);
   const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [loginName, setLoginName] = useState("");
-  const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginMode, setLoginMode] = useState<"login" | "signup">("login");
   const [authError, setAuthError] = useState("");
@@ -238,12 +247,17 @@ export default function App() {
     : "--";
   const selectedTunerString = TUNER_STRINGS[selectedTunerStringIndex] ?? TUNER_STRINGS[0];
   const tunerReading = tunerHz ? getTunerReading(tunerHz, selectedTunerString) : null;
-    const targetPitchText = currentNote
+  const targetPitchText = currentNote
     ? currentNote.isRest
       ? "\uC27C\uD45C"
       : currentTargetNotes
         .map((note) => `${formatNoteName(note)} ${midiToHz(getSoundingMidi(note)).toFixed(1)} Hz`)
         .join(" / ")
+    : "--";
+  const practiceAccuracyText =
+    practiceStats.accuracy === null ? "--" : `${practiceStats.accuracy}%`;
+  const practiceCorrectText = practiceStats.totalNotes
+    ? `${practiceStats.correctNotes}/${practiceStats.totalNotes}`
     : "--";
   const realAchievementSummaries = useMemo(
     () => achievementSummaries.filter((summary) => summary.songId !== accuracyTestSongId),
@@ -253,6 +267,24 @@ export default function App() {
     () => realAchievementSummaries.filter((summary) => summary.latestIsMastered),
     [realAchievementSummaries]
   );
+  const practicedAchievementSummaries = useMemo(
+    () =>
+      realAchievementSummaries
+        .filter((summary) => summary.sessionCount > 0)
+        .sort((a, b) => (b.lastPracticedAt ?? "").localeCompare(a.lastPracticedAt ?? "")),
+    [realAchievementSummaries]
+  );
+  const recentMonthAchievementSummaries = useMemo(
+    () =>
+      realAchievementSummaries
+        .filter((summary) => summary.recentMonthSessionCount > 0)
+        .sort(
+          (a, b) =>
+            (a.recentMonthAccuracy ?? 0) - (b.recentMonthAccuracy ?? 0) ||
+            (b.lastPracticedAt ?? "").localeCompare(a.lastPracticedAt ?? "")
+        ),
+    [realAchievementSummaries]
+  );
   const inProgressAchievementSummaries = useMemo(
     () =>
       realAchievementSummaries.filter(
@@ -260,37 +292,46 @@ export default function App() {
       ),
     [realAchievementSummaries]
   );
+  const reviewAchievementSummaries = useMemo(
+    () =>
+      inProgressAchievementSummaries
+        .filter((summary) => summary.latestAccuracy !== null && summary.latestAccuracy < 90)
+        .sort(
+          (a, b) =>
+            (a.latestAccuracy ?? 0) - (b.latestAccuracy ?? 0) ||
+            (b.lastPracticedAt ?? "").localeCompare(a.lastPracticedAt ?? "")
+        ),
+    [inProgressAchievementSummaries]
+  );
   const visibleMasteredAchievementSummaries = showAllMasteredSongs
     ? masteredAchievementSummaries
     : masteredAchievementSummaries.slice(0, 5);
   const visibleInProgressAchievementSummaries = showAllInProgressSongs
     ? inProgressAchievementSummaries
     : inProgressAchievementSummaries.slice(0, 3);
-  const practicedSongCount = realAchievementSummaries.filter((summary) => summary.sessionCount > 0).length;
+  const visiblePracticedAchievementSummaries = showAllPracticedSongs
+    ? practicedAchievementSummaries
+    : practicedAchievementSummaries.slice(0, 5);
+  const visibleRecentMonthAchievementSummaries = showAllRecentMonthSongs
+    ? recentMonthAchievementSummaries
+    : recentMonthAchievementSummaries.slice(0, 5);
+  const visibleReviewAchievementSummaries = showAllReviewSongs
+    ? reviewAchievementSummaries
+    : reviewAchievementSummaries.slice(0, 3);
+  const practicedSongCount = practicedAchievementSummaries.length;
   const totalPracticeSessionCount = realAchievementSummaries.reduce(
     (total, summary) => total + summary.sessionCount,
     0
   );
-  const averageLatestAccuracy = useMemo(() => {
-    const accuracies = realAchievementSummaries
-      .map((summary) => summary.latestAccuracy)
-      .filter((accuracy): accuracy is number => accuracy !== null);
-    if (!accuracies.length) return null;
-    return Math.round(
-      accuracies.reduce((total, accuracy) => total + accuracy, 0) / accuracies.length
-    );
-  }, [realAchievementSummaries]);
   const visibleSavedSongs = useMemo(
     () => savedSongs.filter((song) => song.id !== accuracyTestSongId),
     [savedSongs, accuracyTestSongId]
   );
   const focusSelectableSongs = useMemo(
     () =>
-      [...savedSongs].sort((a, b) => {
-        if (a.id === accuracyTestSongId) return -1;
-        if (b.id === accuracyTestSongId) return 1;
-        return b.updatedAt.localeCompare(a.updatedAt);
-      }),
+      savedSongs
+        .filter((song) => song.id !== accuracyTestSongId)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [savedSongs, accuracyTestSongId]
   );
   const scoreDisplayXml = useMemo(
@@ -352,7 +393,6 @@ export default function App() {
   }, []);
   useEffect(() => {
     initDb();
-    seedAccuracyTestSong();
     refreshSavedSongs();
     refreshPracticeInsights(songId);
     return () => {
@@ -495,11 +535,10 @@ export default function App() {
       return;
     }
 
-    const email = loginEmail.trim().toLowerCase();
-    const name = loginMode === "signup" ? loginName.trim() : loginName.trim() || email.split("@")[0];
-    if (!email.includes("@")) {
-      setAuthError("이메일 형식으로 입력해주세요.");
-      Alert.alert("로그인 오류", "이메일 형식으로 입력해주세요.");
+    const name = loginName.trim();
+    if (!name) {
+      setAuthError("이름을 입력해주세요.");
+      Alert.alert("로그인 오류", "이름을 입력해주세요.");
       return;
     }
     if (loginPassword.trim().length < 6) {
@@ -507,10 +546,11 @@ export default function App() {
       Alert.alert("로그인 오류", "비밀번호는 6자 이상 입력해주세요.");
       return;
     }
+    const email = createFirebaseEmailFromName(name);
     try {
       setAuthError("");
       if (loginMode === "signup") {
-        await signupWithEmail(email, loginPassword, name || "사용자");
+        await signupWithEmail(email, loginPassword, name);
       } else {
         await loginWithEmail(email, loginPassword);
       }
@@ -556,14 +596,30 @@ export default function App() {
     if (message.includes("auth/invalid-api-key") || message.includes("apiKey")) {
       return "Firebase API 키가 비어 있거나 올바르지 않습니다. .env의 EXPO_PUBLIC_FIREBASE_API_KEY 값을 확인해주세요.";
     }
-    if (message.includes("auth/email-already-in-use")) return "이미 가입된 이메일입니다.";
+    if (message.includes("auth/email-already-in-use")) return "이미 가입된 이름입니다.";
     if (message.includes("auth/invalid-credential") || message.includes("auth/wrong-password")) {
-      return "이메일 또는 비밀번호가 올바르지 않습니다.";
+      return "이름 또는 비밀번호가 올바르지 않습니다.";
     }
-    if (message.includes("auth/user-not-found")) return "가입되지 않은 이메일입니다.";
+    if (message.includes("auth/user-not-found")) return "가입되지 않은 이름입니다.";
     if (message.includes("auth/weak-password")) return "비밀번호가 너무 약합니다. 6자 이상으로 입력해주세요.";
     if (message.includes("auth/invalid-email")) return "이메일 형식이 올바르지 않습니다.";
     return message;
+  }
+  function createFirebaseEmailFromName(name: string) {
+    const normalizedName = name.trim().toLowerCase();
+    const slug =
+      normalizedName
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9._-]/g, "")
+        .replace(/^-+|-+$/g, "") || "user";
+    return `${slug}-${hashNameForAuth(normalizedName)}@guitar-practice.local`;
+  }
+  function hashNameForAuth(value: string) {
+    let hash = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+    }
+    return hash.toString(36);
   }
   async function importMusicXml() {
     let picked;
@@ -594,15 +650,6 @@ export default function App() {
       setSavedSongs([]);
       setAchievementSummaries([]);
     }
-  }
-  function seedAccuracyTestSong() {
-    const testSongId = createSongId(ACCURACY_TEST_SONG_TITLE);
-    if (getSavedSong(testSongId)) return;
-    saveSong({
-      id: testSongId,
-      title: ACCURACY_TEST_SONG_TITLE,
-      xmlContent: sanitizeMusicXmlDisplayText(SAMPLE_MUSIC_XML, ACCURACY_TEST_SONG_TITLE),
-    });
   }
   async function openSavedSong(id: string) {
     const savedSong = getSavedSong(id);
@@ -669,133 +716,34 @@ export default function App() {
       },
     ]);
   }
-  function confirmClearFocusHistory() {
+  function confirmClearFocusRange(range: FocusRange) {
     const selectedSongId = focusSelectedSongId;
     if (!selectedSongId) return;
 
     Alert.alert(
-      "\uAE30\uB85D \uCD08\uAE30\uD654",
-      `"${songTitle}"\uC758 \uCDE8\uC57D \uAD6C\uAC04\uACFC \uC5F0\uC2B5 \uAE30\uB85D\uC744 \uC9C0\uC6B8\uAE4C\uC694? \uC545\uBCF4 \uD30C\uC77C\uC740 \uB0A8\uC544\uC788\uC2B5\uB2C8\uB2E4.`,
+      "\uAD6C\uAC04 \uCD08\uAE30\uD654",
+      `${formatFocusRange(range)}의 저장된 실수 기록만 지울까요?`,
       [
         { text: "\uCDE8\uC18C", style: "cancel" },
         {
           text: "\uCD08\uAE30\uD654",
           style: "destructive",
           onPress: () => {
-            clearPracticeHistoryForSong(selectedSongId);
-            setFocusMeasures([]);
-            setFocusRanges([]);
-            setWeakPracticeSessions([]);
-            setLatestMistakeNoteIndices([]);
+            clearPracticeMistakesForSongMeasureRange(
+              selectedSongId,
+              range.fromMeasure,
+              range.toMeasure
+            );
             setWeakMistakeNoteIndices([]);
             setPendingFocusMeasure(null);
             setFocusPracticeMeasure(null);
             setFocusPracticeRange(null);
-            setIsRangeSelectionMode(false);
-            setRangeSelectionStartMeasure(null);
-            setIsRangeSelectionReady(false);
-            setRangeSelectionStartIndex(null);
-            setCustomNoteRange(null);
-            setResultSummary("\uC544\uC9C1 \uC800\uC7A5\uB41C \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
+            refreshPracticeInsights(selectedSongId, notes);
             refreshSavedSongs();
-            refreshPracticeInsights(selectedSongId);
           },
         },
       ]
     );
-  }
-  async function practiceSampleScore() {
-    await loadMusicXml(SAMPLE_MUSIC_XML, ACCURACY_TEST_SONG_TITLE, false);
-    refreshPracticeInsights(
-      accuracyTestSongId,
-      parseMusicXml(SAMPLE_MUSIC_XML, useLowestChordNoteOnly)
-    );
-    setPlayReturnSection(activeSection === "focus" ? "focus" : "library");
-    setActiveSection("play");
-  }
-  async function createDemoFocusResult() {
-    const demoTitle = ACCURACY_TEST_SONG_TITLE;
-    const demoSongId = createSongId(demoTitle);
-    const demoNotes = parseMusicXml(SAMPLE_MUSIC_XML, false);
-    const weakNotes = [
-      ...demoNotes.filter((note) => note.measure === 6).slice(0, 3),
-      ...demoNotes.filter((note) => note.measure === 3).slice(0, 1),
-    ];
-    const mistakes: PracticeMistakeDraft[] = weakNotes.map((note) => ({
-      songId: demoSongId,
-      measure: note.measure,
-      noteIndex: note.index,
-      expectedMidi: note.midi,
-      playedMidi: null,
-      reason: "timeout",
-    }));
-    const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
-    const accuracy = Math.max(0, Math.round(((demoNotes.length - mistakes.length) / demoNotes.length) * 100));
-    saveSong({
-      id: demoSongId,
-      title: demoTitle,
-      xmlContent: SAMPLE_MUSIC_XML,
-    });
-    savePracticeSession({
-      songId: demoSongId,
-      totalNotes: demoNotes.length,
-      mistakes,
-      wrongMeasureCount,
-      wrongNoteCount: mistakes.length,
-      isMastered: accuracy >= 90,
-    });
-    refreshSavedSongs();
-    await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
-    refreshPracticeInsights(demoSongId);
-    setResultSummary(
-      `MASTER - wrong measures ${wrongMeasureCount}, wrong notes ${mistakes.length}`
-    );
-    setPendingFocusMeasure(6);
-    setScoreViewVersion((version) => version + 1);
-    setActiveSection("weakScore");
-  }
-  async function createDemoAchievementResult() {
-    const demoTitle = ACCURACY_TEST_SONG_TITLE;
-    const demoSongId = createSongId(demoTitle);
-    const demoNotes = parseMusicXml(SAMPLE_MUSIC_XML, false);
-    const makeMistakes = (measureNumbers: number[]) =>
-      measureNumbers
-        .map((measure) => demoNotes.find((note) => note.measure === measure))
-        .filter((note): note is NonNullable<(typeof demoNotes)[number]> => Boolean(note))
-        .map((note) => ({
-          songId: demoSongId,
-          measure: note.measure,
-          noteIndex: note.index,
-          expectedMidi: note.midi,
-          playedMidi: null,
-          reason: "timeout" as const,
-        }));
-    const demoSessions = [
-      makeMistakes([2, 3, 4, 5, 6]),
-      makeMistakes([3, 5, 6, 7]),
-      makeMistakes([3, 6]),
-    ];
-    saveSong({
-      id: demoSongId,
-      title: demoTitle,
-      xmlContent: SAMPLE_MUSIC_XML,
-    });
-    for (const mistakes of demoSessions) {
-      const wrongMeasureCount = new Set(mistakes.map((mistake) => mistake.measure)).size;
-      const accuracy = Math.max(0, Math.round(((demoNotes.length - mistakes.length) / demoNotes.length) * 100));
-      savePracticeSession({
-        songId: demoSongId,
-        totalNotes: demoNotes.length,
-        mistakes,
-        wrongMeasureCount,
-        wrongNoteCount: mistakes.length,
-        isMastered: accuracy >= 90,
-      });
-    }
-    refreshSavedSongs();
-    await loadMusicXml(SAMPLE_MUSIC_XML, demoTitle, false);
-    refreshPracticeInsights(demoSongId);
-    setActiveSection("achievement");
   }
   async function loadMusicXml(xml: string, title: string, shouldSave = true) {
     const trimmedXml = xml.trim();
@@ -816,6 +764,9 @@ export default function App() {
     setNativeMicLevel("--");
     setAnalysisStatus("\uB9C8\uC774\uD06C \uB300\uAE30 \uC911");
     setResultSummary("\uC544\uC9C1 \uC800\uC7A5\uB41C \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
+    practiceBpmRef.current = DEFAULT_PRACTICE_BPM;
+    setPracticeBpm(DEFAULT_PRACTICE_BPM);
+    setPracticeStats({ accuracy: null, correctNotes: 0, totalNotes: parsedNotes.length });
     setIsListening(false);
     setMicStarting(false);
     setWaitingToStart(false);
@@ -940,6 +891,7 @@ export default function App() {
     stopCountdown();
     stopNoteTimer();
     const startIndex = mode === "resume" ? currentIndexRef.current : getPracticeStartIndex();
+    practiceBpmRef.current = clampPracticeBpm(practiceBpm);
     currentIndexRef.current = startIndex;
     setCurrentIndex(startIndex);
     setScorePage(Math.max(1, Math.ceil((notes[startIndex]?.measure ?? 1) / measuresPerPage)));
@@ -954,6 +906,7 @@ export default function App() {
       await discardPerformanceRecording();
       await startPerformanceRecording();
       sessionMistakesRef.current = [];
+      sessionAttemptedEventKeysRef.current = new Set();
       noteFeedbackRef.current = new Map();
       sessionSavedRef.current = false;
       setResultSummary("\uCC98\uC74C\uBD80\uD130 \uC5F0\uC2B5 \uC911");
@@ -1083,11 +1036,16 @@ export default function App() {
   }
   function adjustPracticeBpm(amount: number) {
     if (isPracticeRunning) return;
-    setPracticeBpm((current) => clampPracticeBpm(current + amount));
+    setPracticeBpm((current) => {
+      const nextBpm = clampPracticeBpm(current + amount);
+      practiceBpmRef.current = nextBpm;
+      return nextBpm;
+    });
   }
   function getPracticeTimeScale(note: Pick<PracticeNote, "bpm">) {
-    const sourceBpm = Number.isFinite(note.bpm) && note.bpm > 0 ? note.bpm : practiceBpm;
-    return sourceBpm / clampPracticeBpm(practiceBpm);
+    const activePracticeBpm = clampPracticeBpm(practiceBpmRef.current);
+    const sourceBpm = Number.isFinite(note.bpm) && note.bpm > 0 ? note.bpm : activePracticeBpm;
+    return sourceBpm / activePracticeBpm;
   }
   function scaleDurationForPractice(note: Pick<PracticeNote, "bpm">, durationMs: number) {
     return Math.max(40, durationMs * getPracticeTimeScale(note));
@@ -1192,11 +1150,19 @@ export default function App() {
     const nextNote = notes[nextIndex];
     return !nextNote || nextNote.measure !== focusPracticeMeasure;
   }
+  function getPracticeEventKey(note: NonNullable<typeof currentNote>) {
+    return `${note.measure}:${Math.round(note.startMs / SAME_BEAT_MS)}`;
+  }
+  function markPracticeEventAttempted(note: NonNullable<typeof currentNote>) {
+    if (getNotesAtSameStart(note).every((groupNote) => groupNote.isRest)) return;
+    sessionAttemptedEventKeysRef.current.add(getPracticeEventKey(note));
+  }
   function passCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
     if (!note) return;
     const groupNotes = getNotesAtSameStart(note);
+    markPracticeEventAttempted(note);
     for (const groupNote of groupNotes) {
       setNoteFeedback(groupNote.index, {
         noteColor: "#2e7d32",
@@ -1230,6 +1196,7 @@ export default function App() {
     const note = notes[currentIndexRef.current];
     if (!note) return;
     const groupNotes = getNotesAtSameStart(note);
+    markPracticeEventAttempted(note);
     const diagnostic = getFailDiagnostic(note);
     for (const groupNote of groupNotes) {
       setNoteFeedback(groupNote.index, {
@@ -1620,8 +1587,24 @@ export default function App() {
     if (summary.latestAccuracy >= 80) return "\uC720\uC9C0 \uAD6C\uAC04";
     return "\uC9D1\uC911 \uD544\uC694";
   }
+  function formatAchievementListMeta(summary: SongAchievementSummary) {
+    return `\uCD5C\uADFC ${formatAchievementAccuracy(summary)} · 90% \uC774\uC0C1 ${Math.min(
+      summary.highAccuracyStreak,
+      3
+    )}/3 · \uC5F0\uC2B5 ${summary.sessionCount}\uD68C`;
+  }
+  function formatRecentMonthAccuracy(summary: SongAchievementSummary) {
+    return summary.recentMonthAccuracy === null ? "-" : `${summary.recentMonthAccuracy}%`;
+  }
+  function formatRecentMonthMeta(summary: SongAchievementSummary) {
+    return `\uCD5C\uADFC \uD55C \uB2EC ${formatRecentMonthAccuracy(summary)} · \uC5F0\uC2B5 ${summary.recentMonthSessionCount}\uD68C`;
+  }
   function getAccuracyBarWidth(summary: SongAchievementSummary): DimensionValue {
     return `${Math.max(0, Math.min(100, summary.latestAccuracy ?? 0))}%`;
+  }
+  function selectAchievementView(view: AchievementView) {
+    setAchievementView(view);
+    setSelectedAchievementSongId(null);
   }
   function openAchievementPractice(summary: SongAchievementSummary) {
     void openSavedSong(summary.songId);
@@ -1656,6 +1639,11 @@ export default function App() {
           <Text style={styles.achievementMetric}>
             {"\uCD5C\uACE0 \uD2C0\uB9B0 \uB9C8\uB514 "}{summary.bestWrongMeasureCount ?? "-"}{"\uAC1C"}
           </Text>
+          {summary.recentMonthSessionCount > 0 ? (
+            <Text style={styles.achievementMetric}>
+              {"\uCD5C\uADFC \uD55C \uB2EC "}{formatRecentMonthAccuracy(summary)}
+            </Text>
+          ) : null}
         </View>
         <Text style={styles.achievementDate}>
           {"80% \uC774\uC0C1\uC740 \uCE74\uC6B4\uD2B8 \uC720\uC9C0, 80% \uBBF8\uB9CC\uC740 \uCD08\uAE30\uD654 / \uCDE8\uC57D \uAD6C\uAC04: "}{formatAchievementWeakMeasures(summary)}
@@ -1840,13 +1828,27 @@ export default function App() {
       setWeakPracticeSessions(getWeakPracticeSessionsForSong(nextSongId, 8));
       setLatestMistakeNoteIndices(getLatestMistakeNoteIndicesForSong(nextSongId));
       if (latestSession) {
+        const latestCorrectNotes = Math.max(
+          0,
+          latestSession.total_notes - latestSession.wrong_note_count
+        );
+        const latestAccuracy = Math.max(
+          0,
+          Math.round((latestCorrectNotes / Math.max(1, latestSession.total_notes)) * 100)
+        );
         setResultSummary(
           `${latestSession.is_mastered ? "\uC644\uB8CC" : "\uC9C4\uD589 \uC911"} - \uD2C0\uB9B0 \uB9C8\uB514 ${
             latestSession.wrong_measure_count
           }\uAC1C, \uD2C0\uB9B0 \uC74C ${latestSession.wrong_note_count}\uAC1C`
         );
+        setPracticeStats({
+          accuracy: latestAccuracy,
+          correctNotes: latestCorrectNotes,
+          totalNotes: latestSession.total_notes,
+        });
       } else {
         setResultSummary("\uC544\uC9C1 \uC800\uC7A5\uB41C \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
+        setPracticeStats({ accuracy: null, correctNotes: 0, totalNotes: noteSource.length });
       }
       setAchievementSessions(getSessionsForSong(nextSongId, 8));
       setAchievementSummaries(getSongAchievementSummaries());
@@ -1857,6 +1859,7 @@ export default function App() {
       setLatestMistakeNoteIndices([]);
       setAchievementSessions([]);
       setAchievementSummaries([]);
+      setPracticeStats({ accuracy: null, correctNotes: 0, totalNotes: noteSource.length });
     }
   }
   function recordMistake(
@@ -1884,12 +1887,19 @@ export default function App() {
     const wrongMeasures = new Set(mistakes.map((mistake) => mistake.measure));
     const wrongMeasureCount = wrongMeasures.size;
     const wrongNoteCount = mistakes.length;
-    const accuracy = Math.max(0, Math.round(((notes.length - wrongNoteCount) / notes.length) * 100));
+    const attemptedEventCount = sessionAttemptedEventKeysRef.current.size;
+    const totalNotes = Math.max(attemptedEventCount, wrongNoteCount);
+    if (totalNotes === 0) {
+      await discardPerformanceRecording();
+      return;
+    }
+    const correctNotes = Math.max(0, totalNotes - wrongNoteCount);
+    const accuracy = Math.max(0, Math.round((correctNotes / totalNotes) * 100));
     const isMastered = accuracy >= 90;
     const audioUri = await stopPerformanceRecording();
     savePracticeSession({
       songId,
-      totalNotes: notes.length,
+      totalNotes,
       mistakes,
       wrongMeasureCount,
       wrongNoteCount,
@@ -1899,6 +1909,7 @@ export default function App() {
     setResultSummary(
       `${isMastered ? "\uC644\uB8CC" : "\uC9C4\uD589 \uC911"} - \uD2C0\uB9B0 \uB9C8\uB514 ${wrongMeasureCount}\uAC1C, \uD2C0\uB9B0 \uC74C ${wrongNoteCount}\uAC1C`
     );
+    setPracticeStats({ accuracy, correctNotes, totalNotes });
     refreshPracticeInsights(songId);
     refreshSavedSongs();
   }
@@ -1923,32 +1934,6 @@ export default function App() {
     setAnalysisStatus("\uB9C8\uC774\uD06C \uB300\uAE30 \uC911");
     setIsListening(false);
     setMicStarting(false);
-  }
-  function openWeakMeasureOnScore(measure: number) {
-    setIsRangeSelectionMode(false);
-    setRangeSelectionStartMeasure(null);
-    setIsRangeSelectionReady(false);
-    setIsRangeSelectionReady(false);
-    setPendingFocusMeasure(measure);
-    setWeakScoreRange({ from: measure, to: measure });
-    setWeakMistakeNoteIndices(getMistakeNoteIndicesForSongMeasure(songId, measure));
-    setScoreViewVersion((version) => version + 1);
-    setActiveSection("weakScore");
-  }
-  function openWeakRangeOnScore(range: FocusRange) {
-    setIsRangeSelectionMode(false);
-    setRangeSelectionStartMeasure(null);
-    setIsRangeSelectionReady(false);
-    setRangeSelectionStartIndex(null);
-    setPendingFocusMeasure(range.fromMeasure);
-    setWeakScoreRange({ from: range.fromMeasure, to: range.toMeasure });
-    setWeakMistakeNoteIndices(
-      range.mistakeNoteIndices?.length
-        ? range.mistakeNoteIndices
-        : getMistakeNoteIndicesForSongMeasureRange(songId, range.fromMeasure, range.toMeasure)
-    );
-    setScoreViewVersion((version) => version + 1);
-    setActiveSection("weakScore");
   }
   function openRangeSelectionOnScore() {
     setIsRangeSelectionMode(true);
@@ -2092,10 +2077,27 @@ export default function App() {
     setActiveSection("play");
     setAnalysisStatus(`\uAD6C\uAC04 \uC5F0\uC2B5: ${from}-${to}\uB9C8\uB514`);
   }
+  async function openCurrentSongFocusFromPlay() {
+    await stopAnalysis({ saveSession: true });
+    refreshPracticeInsights(songId, notes);
+    refreshSavedSongs();
+    setFocusSelectedSongId(songId);
+    setActiveSection("focus");
+  }
+  async function openCurrentSongAchievementFromPlay() {
+    await stopAnalysis({ saveSession: true });
+    refreshPracticeInsights(songId, notes);
+    refreshSavedSongs();
+    setAchievementView("all");
+    setSelectedAchievementSongId(songId);
+    setActiveSection("achievement");
+  }
   async function returnFromPlay() {
     await stopAnalysis({ saveSession: true });
     refreshPracticeInsights(songId, notes);
     refreshSavedSongs();
+    practiceBpmRef.current = DEFAULT_PRACTICE_BPM;
+    setPracticeBpm(DEFAULT_PRACTICE_BPM);
     setActiveSection(playReturnSection);
   }
   function returnFromLibrary() {
@@ -2281,23 +2283,23 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <KeyboardAvoidingView
           style={styles.loginKeyboardView}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 24 : 0}
+          behavior={undefined}
         >
           <ScrollView
             style={styles.loginScroll}
             contentContainerStyle={styles.loginScrollContent}
-            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-            contentInsetAdjustmentBehavior="automatic"
-            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "none"}
+            automaticallyAdjustKeyboardInsets={false}
+            contentInsetAdjustmentBehavior="never"
+            keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled"
+            scrollEnabled
           >
             <View style={styles.loginCard}>
               <Text style={styles.loginTitle}>{"기타 연습"}</Text>
               <Text style={styles.loginSubtitle}>
                 {loginMode === "login"
-                  ? "Firebase 계정으로 로그인하고 연습 기록을 이어서 확인하세요"
-                  : "Firebase 계정을 만들고 악보와 연습 기록을 관리하세요"}
+                  ? "이름과 비밀번호로 로그인하고 연습 기록을 이어서 확인하세요"
+                  : "이름과 비밀번호로 계정을 만들고 연습 기록을 관리하세요"}
               </Text>
               {authError ? <Text style={styles.loginError}>{authError}</Text> : null}
               <View style={styles.loginModeRow}>
@@ -2328,27 +2330,13 @@ export default function App() {
                   </Text>
                 </Pressable>
               </View>
-              {loginMode === "signup" ? (
-                <TextInput
-                  style={styles.loginInput}
-                  value={loginName}
-                  onChangeText={setLoginName}
-                  placeholder="이름"
-                  placeholderTextColor="#8a938d"
-                  autoCorrect={false}
-                  returnKeyType="next"
-                />
-              ) : null}
               <TextInput
                 style={styles.loginInput}
-                value={loginEmail}
-                onChangeText={setLoginEmail}
-                placeholder="이메일"
+                value={loginName}
+                onChangeText={setLoginName}
+                placeholder="이름"
                 placeholderTextColor="#8a938d"
-                autoCapitalize="none"
                 autoCorrect={false}
-                keyboardType="email-address"
-                textContentType="emailAddress"
                 returnKeyType="next"
               />
               <TextInput
@@ -2370,7 +2358,7 @@ export default function App() {
                 </Text>
               </Pressable>
               <Text style={styles.loginNote}>
-                {"Firebase Authentication 이메일/비밀번호 방식으로 로그인합니다."}
+                {"Firebase에는 이름을 바탕으로 만든 내부 계정으로 안전하게 로그인합니다."}
               </Text>
             </View>
           </ScrollView>
@@ -2393,26 +2381,6 @@ export default function App() {
               <Pressable style={styles.logoutButton} onPress={logout}>
                 <Text style={styles.logoutButtonText}>{"로그아웃"}</Text>
               </Pressable>
-            </View>
-          </View>
-          <View style={styles.homeStatsGrid}>
-            <View style={styles.homeStatBox}>
-              <Text style={styles.homeStatValue}>{visibleSavedSongs.length}</Text>
-              <Text style={styles.homeStatLabel}>{"\uC800\uC7A5\uB41C \uC545\uBCF4"}</Text>
-            </View>
-            <View style={styles.homeStatBox}>
-              <Text style={styles.homeStatValue}>{practicedSongCount}</Text>
-              <Text style={styles.homeStatLabel}>{"\uC5F0\uC2B5 \uC911"}</Text>
-            </View>
-            <View style={styles.homeStatBox}>
-              <Text style={styles.homeStatValue}>{masteredAchievementSummaries.length}</Text>
-              <Text style={styles.homeStatLabel}>{"\uB9C8\uC2A4\uD130"}</Text>
-            </View>
-            <View style={styles.homeStatBox}>
-              <Text style={styles.homeStatValue}>
-                {averageLatestAccuracy === null ? "-" : `${averageLatestAccuracy}%`}
-              </Text>
-              <Text style={styles.homeStatLabel}>{"\uD3C9\uADE0 \uC815\uD655\uB3C4"}</Text>
             </View>
           </View>
           <View style={styles.categoryList}>
@@ -2481,10 +2449,6 @@ export default function App() {
               {"MusicXML/MXL\uC744 \uBD88\uB7EC\uC628 \uB4A4 \uC800\uC7A5\uB41C \uC545\uBCF4\uB97C \uB204\uB974\uBA74 \uC5F0\uC2B5\uC774 \uC2DC\uC791\uB429\uB2C8\uB2E4."}
             </Text>
           </View>
-          <Pressable style={styles.samplePracticeButton} onPress={practiceSampleScore}>
-            <Text style={styles.samplePracticeTitle}>{"정확도 확인 곡"}</Text>
-            <Text style={styles.samplePracticeSubtitle}>{"8분음표와 빠른 음 판정을 확인합니다"}</Text>
-          </Pressable>
           <View style={styles.sectionHeaderBlock}>
             <Text style={styles.sectionHeaderTitle}>{"\uC800\uC7A5\uB41C \uC545\uBCF4"}</Text>
           </View>
@@ -2492,8 +2456,11 @@ export default function App() {
             visibleSavedSongs.map((song) => (
               <View key={song.id} style={styles.songRow}>
                 <Pressable style={styles.songButton} onPress={() => openSavedSong(song.id)}>
-                  <Text style={styles.songTitle}>{song.title}</Text>
-                  <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
+                  <View style={styles.focusSongSelectTextBlock}>
+                    <Text style={styles.songTitle}>{song.title}</Text>
+                    <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
+                  </View>
+                  <Text style={styles.focusMeasureChevron}>{">"}</Text>
                 </Pressable>
                 <Pressable style={styles.deleteSongButton} onPress={() => confirmDeleteSong(song)}>
                   <Text style={styles.deleteSongButtonText}>{"\uC0AD\uC81C"}</Text>
@@ -2598,11 +2565,11 @@ export default function App() {
             {tunerReading ? `${cents > 0 ? "+" : ""}${cents} cents` : "0 cents"}
           </Text>
           <Pressable
-            style={[styles.analysisButton, tunerActive && styles.disabledButton]}
+            style={[styles.tunerStartButton, tunerActive && styles.disabledButton]}
             disabled={tunerActive}
             onPress={startTuner}
           >
-            <Text style={styles.analysisButtonText}>{tunerActive ? "듣는 중" : "튜닝 시작"}</Text>
+            <Text style={styles.tunerStartButtonText}>{tunerActive ? "듣는 중" : "튜닝 시작"}</Text>
           </Pressable>
           <Text style={styles.tunerStringItem}>
             {"탭에서 줄을 고른 뒤 해당 줄만 튕겨서 맞추세요."}
@@ -2616,7 +2583,7 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={returnFromFocus}>
-            <Text style={styles.backButtonText}>{focusSelectedSongId ? "곡 선택" : "홈"}</Text>
+            <Text style={styles.backButtonText}>{focusSelectedSongId ? "목록" : "홈"}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
             <Text style={styles.title}>{"\uCDE8\uC57D \uBD80\uBD84 \uC5F0\uC2B5\uD558\uAE30"}</Text>
@@ -2628,7 +2595,7 @@ export default function App() {
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           {!focusSelectedSongId ? (
             <>
-              <View style={styles.focusIntroBox}>
+              <View style={styles.focusIntroHeader}>
                 <Text style={styles.placeholderTitle}>{"곡 선택"}</Text>
                 <Text style={styles.sectionHeaderSubtitle}>
                   {"곡을 선택하면 그 곡의 반복 연습 필요 구간만 따로 보여줍니다."}
@@ -2636,17 +2603,21 @@ export default function App() {
               </View>
               {focusSelectableSongs.length ? (
                 focusSelectableSongs.map((song) => (
-                  <Pressable
-                    key={song.id}
-                    style={styles.focusSongSelectButton}
-                    onPress={() => selectFocusSong(song)}
-                  >
-                    <View style={styles.focusSongSelectTextBlock}>
-                      <Text style={styles.songTitle}>{song.title}</Text>
-                      <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
-                    </View>
-                    <Text style={styles.focusMeasureChevron}>{">"}</Text>
-                  </Pressable>
+                  <View key={song.id} style={styles.songRow}>
+                    <Pressable
+                      style={styles.focusSongSelectButton}
+                      onPress={() => selectFocusSong(song)}
+                    >
+                      <View style={styles.focusSongSelectTextBlock}>
+                        <Text style={styles.songTitle}>{song.title}</Text>
+                        <Text style={styles.songMeta}>{new Date(song.updatedAt).toLocaleString()}</Text>
+                      </View>
+                      <Text style={styles.focusMeasureChevron}>{">"}</Text>
+                    </Pressable>
+                    <Pressable style={styles.deleteSongButton} onPress={() => confirmDeleteSong(song)}>
+                      <Text style={styles.deleteSongButtonText}>{"\uC0AD\uC81C"}</Text>
+                    </Pressable>
+                  </View>
                 ))
               ) : (
                 <Text style={styles.placeholderText}>
@@ -2663,9 +2634,6 @@ export default function App() {
                     {"최근 연습에서 한 마디의 30% 이상을 틀리거나, 마디 경계의 절반+절반 가상 구간에서 30% 이상 틀리면 표시됩니다."}
                   </Text>
                 </View>
-                <Pressable style={styles.clearHistoryButton} onPress={confirmClearFocusHistory}>
-                  <Text style={styles.clearHistoryButtonText}>{"\uAE30\uB85D \uCD08\uAE30\uD654"}</Text>
-                </Pressable>
               </View>
               <Text style={styles.placeholderTitle}>{"\uBC18\uBCF5 \uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04"}</Text>
               {focusRanges.length ? (
@@ -2687,13 +2655,13 @@ export default function App() {
                         style={styles.focusPracticeButton}
                         onPress={() => practiceWeakRange(item)}
                       >
-                        <Text style={styles.focusPracticeButtonText}>{"\uC774 \uBD80\uBD84 \uC5F0\uC2B5\uD558\uAE30"}</Text>
+                        <Text style={styles.focusPracticeButtonText}>{"\uC5F0\uC2B5\uD558\uAE30"}</Text>
                       </Pressable>
                       <Pressable
-                        style={styles.focusReviewButton}
-                        onPress={() => openWeakRangeOnScore(item)}
+                        style={styles.focusResetButton}
+                        onPress={() => confirmClearFocusRange(item)}
                       >
-                        <Text style={styles.focusReviewButtonText}>{"\uC624\uB958 \uC704\uCE58 \uBCF4\uAE30"}</Text>
+                        <Text style={styles.focusResetButtonText}>{"\uCD08\uAE30\uD654"}</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -2841,20 +2809,36 @@ export default function App() {
         </View>
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
           <View style={styles.achievementSummaryGrid}>
-            <View style={styles.achievementSummaryBox}>
+            <Pressable
+              style={[
+                styles.achievementSummaryBox,
+                achievementView === "all" && styles.activeAchievementSummaryBox,
+              ]}
+              onPress={() => selectAchievementView("all")}
+            >
               <Text style={styles.achievementSummaryValue}>{totalPracticeSessionCount}</Text>
-              <Text style={styles.achievementSummaryLabel}>{"\uCD1D \uC5F0\uC2B5"}</Text>
-            </View>
-            <View style={styles.achievementSummaryBox}>
-              <Text style={styles.achievementSummaryValue}>{masteredAchievementSummaries.length}</Text>
-              <Text style={styles.achievementSummaryLabel}>{"\uB9C8\uC2A4\uD130"}</Text>
-            </View>
-            <View style={styles.achievementSummaryBox}>
-              <Text style={styles.achievementSummaryValue}>
-                {averageLatestAccuracy === null ? "-" : `${averageLatestAccuracy}%`}
-              </Text>
-              <Text style={styles.achievementSummaryLabel}>{"\uCD5C\uADFC \uD3C9\uADE0"}</Text>
-            </View>
+              <Text style={styles.achievementSummaryLabel}>{"\uCD1D \uC5F0\uC2B5 \uBCF4\uAE30"}</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.achievementSummaryBox,
+                achievementView === "recentMonth" && styles.activeAchievementSummaryBox,
+              ]}
+              onPress={() => selectAchievementView("recentMonth")}
+            >
+              <Text style={styles.achievementSummaryValue}>{recentMonthAchievementSummaries.length}</Text>
+              <Text style={styles.achievementSummaryLabel}>{"\uCD5C\uADFC \uD55C \uB2EC"}</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.achievementSummaryBox,
+                achievementView === "review" && styles.activeAchievementSummaryBox,
+              ]}
+              onPress={() => selectAchievementView("review")}
+            >
+              <Text style={styles.achievementSummaryValue}>{reviewAchievementSummaries.length}</Text>
+              <Text style={styles.achievementSummaryLabel}>{"\uC810\uAC80\uD560 \uACE1"}</Text>
+            </Pressable>
           </View>
           <View style={styles.achievementTabs}>
             <Pressable
@@ -2862,10 +2846,7 @@ export default function App() {
                 styles.achievementTabButton,
                 achievementView === "progress" && styles.activeAchievementTabButton,
               ]} 
-              onPress={() => {
-                setAchievementView("progress");
-                setSelectedAchievementSongId(null);
-              }}
+              onPress={() => selectAchievementView("progress")}
             >
               <Text
                 style={[
@@ -2889,10 +2870,7 @@ export default function App() {
                 styles.achievementTabButton,
                 achievementView === "mastered" && styles.activeAchievementTabButton,
               ]}
-              onPress={() => {
-                setAchievementView("mastered");
-                setSelectedAchievementSongId(null);
-              }}
+              onPress={() => selectAchievementView("mastered")}
             >
               <Text
                 style={[
@@ -2912,7 +2890,156 @@ export default function App() {
               </Text>
             </Pressable>
           </View>
-          {achievementView === "progress" ? (
+          {achievementView === "all" ? (
+            <>
+              <Text style={styles.placeholderTitle}>{"\uC804\uCCB4 \uC5F0\uC2B5\uACE1"}</Text>
+              {visiblePracticedAchievementSummaries.length ? (
+                visiblePracticedAchievementSummaries.map((summary) => (
+                  <Pressable
+                    key={summary.songId}
+                    style={styles.achievementRow}
+                    onPress={() =>
+                      setSelectedAchievementSongId((current) =>
+                        current === summary.songId ? null : summary.songId
+                      )
+                    }
+                  >
+                    <View style={styles.achievementTextBlock}>
+                      <View style={styles.achievementTitleRow}>
+                        <Text style={styles.achievementTitle}>{summary.title}</Text>
+                        <Text
+                          style={
+                            summary.latestIsMastered
+                              ? styles.masteredStatusPill
+                              : styles.achievementStatusPill
+                          }
+                        >
+                          {getAchievementStatusLabel(summary)}
+                        </Text>
+                      </View>
+                      <Text style={styles.achievementListMeta}>
+                        {formatAchievementListMeta(summary)}
+                      </Text>
+                      {selectedAchievementSongId === summary.songId ? (
+                        renderAchievementDetails(
+                          summary,
+                          summary.latestIsMastered
+                            ? "\uB2E4\uC2DC \uC5F0\uC2B5\uD558\uAE30"
+                            : "\uC774 \uACE1 \uC5F0\uC2B5\uD558\uAE30"
+                        )
+                      ) : null}
+                    </View>
+                  </Pressable>
+                ))
+              ) : (
+                <Text style={styles.placeholderText}>{"\uC544\uC9C1 \uC5F0\uC2B5 \uAE30\uB85D\uC774 \uC788\uB294 \uACE1\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</Text>
+              )}
+              {practicedAchievementSummaries.length > 5 ? (
+                <Pressable
+                  style={styles.primaryWideButton}
+                  onPress={() => setShowAllPracticedSongs((current) => !current)}
+                >
+                  <Text style={styles.primaryWideButtonText}>
+                    {showAllPracticedSongs ? "\uC811\uAE30" : "\uB354\uBCF4\uAE30"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : achievementView === "recentMonth" ? (
+            <>
+              <Text style={styles.placeholderTitle}>{"\uCD5C\uADFC \uD55C \uB2EC \uACE1\uBCC4 \uC815\uD655\uB3C4"}</Text>
+              {visibleRecentMonthAchievementSummaries.length ? (
+                visibleRecentMonthAchievementSummaries.map((summary) => (
+                  <Pressable
+                    key={summary.songId}
+                    style={styles.achievementRow}
+                    onPress={() =>
+                      setSelectedAchievementSongId((current) =>
+                        current === summary.songId ? null : summary.songId
+                      )
+                    }
+                  >
+                    <View style={styles.achievementTextBlock}>
+                      <View style={styles.achievementTitleRow}>
+                        <Text style={styles.achievementTitle}>{summary.title}</Text>
+                        <Text
+                          style={
+                            summary.latestIsMastered
+                              ? styles.masteredStatusPill
+                              : styles.achievementStatusPill
+                          }
+                        >
+                          {formatRecentMonthAccuracy(summary)}
+                        </Text>
+                      </View>
+                      <Text style={styles.achievementListMeta}>
+                        {formatRecentMonthMeta(summary)}
+                      </Text>
+                      {selectedAchievementSongId === summary.songId ? (
+                        renderAchievementDetails(summary, "\uC774 \uACE1 \uC5F0\uC2B5\uD558\uAE30")
+                      ) : null}
+                    </View>
+                  </Pressable>
+                ))
+              ) : (
+                <Text style={styles.placeholderText}>{"\uCD5C\uADFC \uD55C \uB2EC \uC5F0\uC2B5 \uAE30\uB85D\uC774 \uC788\uB294 \uACE1\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</Text>
+              )}
+              {recentMonthAchievementSummaries.length > 5 ? (
+                <Pressable
+                  style={styles.primaryWideButton}
+                  onPress={() => setShowAllRecentMonthSongs((current) => !current)}
+                >
+                  <Text style={styles.primaryWideButtonText}>
+                    {showAllRecentMonthSongs ? "\uC811\uAE30" : "\uB354\uBCF4\uAE30"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : achievementView === "review" ? (
+            <>
+              <Text style={styles.placeholderTitle}>{"\uC810\uAC80\uD560 \uACE1"}</Text>
+              {visibleReviewAchievementSummaries.length ? (
+                visibleReviewAchievementSummaries.map((summary) => (
+                  <Pressable
+                    key={summary.songId}
+                    style={styles.achievementRow}
+                    onPress={() =>
+                      setSelectedAchievementSongId((current) =>
+                        current === summary.songId ? null : summary.songId
+                      )
+                    }
+                  >
+                    <View style={styles.achievementTextBlock}>
+                      <View style={styles.achievementTitleRow}>
+                        <Text style={styles.achievementTitle}>{summary.title}</Text>
+                        <Text style={styles.achievementStatusPill}>
+                          {getAchievementStatusLabel(summary)}
+                        </Text>
+                      </View>
+                      <Text style={styles.achievementListMeta}>
+                        {formatAchievementListMeta(summary)}
+                      </Text>
+                      {selectedAchievementSongId === summary.songId ? (
+                        renderAchievementDetails(summary, "\uC815\uD655\uB3C4 \uC62C\uB9AC\uAE30")
+                      ) : null}
+                    </View>
+                  </Pressable>
+                ))
+              ) : (
+                <Text style={styles.placeholderText}>{"\uC810\uAC80\uD560 \uC5F0\uC2B5 \uC911\uC778 \uACE1\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</Text>
+              )}
+              {reviewAchievementSummaries.length > 3 ? (
+                <Pressable
+                  style={styles.primaryWideButton}
+                  onPress={() => setShowAllReviewSongs((current) => !current)}
+                >
+                  <Text style={styles.primaryWideButtonText}>
+                    {showAllReviewSongs ? "\uC811\uAE30" : "\uB354\uBCF4\uAE30"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : achievementView === "progress" ? (
             <>
               <Text style={styles.placeholderTitle}>{"\uC5F0\uC2B5 \uC911\uC778 \uACE1"}</Text>
               {visibleInProgressAchievementSummaries.length ? (
@@ -2933,6 +3060,9 @@ export default function App() {
                           {getAchievementStatusLabel(summary)}
                         </Text>
                       </View>
+                      <Text style={styles.achievementListMeta}>
+                        {formatAchievementListMeta(summary)}
+                      </Text>
                       {selectedAchievementSongId === summary.songId ? (
                         renderAchievementDetails(summary, "\uC774 \uACE1 \uC5F0\uC2B5\uD558\uAE30")
                       ) : null}
@@ -2975,6 +3105,9 @@ export default function App() {
                         <Text style={styles.achievementTitle}>{summary.title}</Text>
                         <Text style={styles.masteredStatusPill}>{"\uB9C8\uC2A4\uD130"}</Text>
                       </View>
+                      <Text style={styles.achievementListMeta}>
+                        {formatAchievementListMeta(summary)}
+                      </Text>
                       {selectedAchievementSongId === summary.songId ? (
                         renderAchievementDetails(summary, "\uB2E4\uC2DC \uC5F0\uC2B5\uD558\uAE30")
                       ) : null}
@@ -3011,6 +3144,14 @@ export default function App() {
           <Text style={styles.subtitle}>
             {songTitle} - {notes.length}{"\uAC1C \uC74C\uD45C"}
           </Text>
+        </View>
+        <View style={styles.practiceHeaderActions}>
+          <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongFocusFromPlay}>
+            <Text style={styles.practiceHeaderActionText}>{"취약 부분"}</Text>
+          </Pressable>
+          <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongAchievementFromPlay}>
+            <Text style={styles.practiceHeaderActionText}>{"성취도"}</Text>
+          </Pressable>
         </View>
       </View>
       <View style={styles.practiceMainRow}>
@@ -3080,82 +3221,103 @@ export default function App() {
             </View>
           ) : null}
         </View>
-        <View style={styles.practiceSidePanel}>
-          <View style={styles.sideBpmControl}>
-            <Text style={styles.bpmLabel}>{"연습 BPM"}</Text>
-            <Text style={styles.sideBpmValue}>{practiceBpm}</Text>
-            <View style={styles.sideBpmButtons}>
-              <Pressable
-                style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
-                disabled={isPracticeRunning}
-                onPress={() => adjustPracticeBpm(-10)}
-              >
-                <Text style={styles.bpmButtonText}>{"-10"}</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
-                disabled={isPracticeRunning}
-                onPress={() => adjustPracticeBpm(-5)}
-              >
-                <Text style={styles.bpmButtonText}>{"-5"}</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
-                disabled={isPracticeRunning}
-                onPress={() => adjustPracticeBpm(5)}
-              >
-                <Text style={styles.bpmButtonText}>{"+5"}</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
-                disabled={isPracticeRunning}
-                onPress={() => adjustPracticeBpm(10)}
-              >
-                <Text style={styles.bpmButtonText}>{"+10"}</Text>
-              </Pressable>
+        <Pressable
+          style={styles.practiceSideToggle}
+          onPress={() => setShowPracticeSidePanel((current) => !current)}
+        >
+          <Text style={styles.practiceSideToggleIcon}>{showPracticeSidePanel ? ">" : "<"}</Text>
+          <Text style={styles.practiceSideToggleText}>
+            {showPracticeSidePanel ? "닫기" : "패널"}
+          </Text>
+        </Pressable>
+        {showPracticeSidePanel ? (
+          <View style={styles.practiceSidePanel}>
+            <View style={styles.sideBpmControl}>
+              <Text style={styles.bpmLabel}>{"연습 BPM"}</Text>
+              <Text style={styles.sideBpmValue}>{practiceBpm}</Text>
+              <View style={styles.sideBpmButtons}>
+                <Pressable
+                  style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
+                  disabled={isPracticeRunning}
+                  onPress={() => adjustPracticeBpm(-10)}
+                >
+                  <Text style={styles.bpmButtonText}>{"-10"}</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
+                  disabled={isPracticeRunning}
+                  onPress={() => adjustPracticeBpm(-5)}
+                >
+                  <Text style={styles.bpmButtonText}>{"-5"}</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
+                  disabled={isPracticeRunning}
+                  onPress={() => adjustPracticeBpm(5)}
+                >
+                  <Text style={styles.bpmButtonText}>{"+5"}</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.sideBpmButton, isPracticeRunning && styles.disabledButton]}
+                  disabled={isPracticeRunning}
+                  onPress={() => adjustPracticeBpm(10)}
+                >
+                  <Text style={styles.bpmButtonText}>{"+10"}</Text>
+                </Pressable>
+              </View>
             </View>
+            <View style={styles.sidePracticeInfo}>
+              <Text style={styles.sidePracticeInfoTitle}>{"연습 정보"}</Text>
+              <View style={styles.sidePracticeMetricRow}>
+                <Text style={styles.sidePracticeMetricLabel}>{"정확도"}</Text>
+                <Text style={styles.sidePracticeMetricValue}>{practiceAccuracyText}</Text>
+              </View>
+              <View style={styles.sidePracticeMetricRow}>
+                <Text style={styles.sidePracticeMetricLabel}>{"맞은 음표"}</Text>
+                <Text style={styles.sidePracticeMetricValue}>{practiceCorrectText}</Text>
+              </View>
+            </View>
+            {!focusPracticeRange && focusPracticeMeasure === null ? (
+              <Pressable
+                style={[
+                  styles.sidePracticeNotice,
+                  showPracticeHighlights && styles.sidePracticeNoticeActive,
+                ]}
+                onPress={togglePracticeHighlights}
+              >
+                <>
+                  <Text style={styles.weakPracticeNoticeTitle}>
+                    {focusRanges.length ? "조심해서 연주할 구간" : "악보 표시"}
+                  </Text>
+                  <Text style={styles.weakPracticeNoticeText}>
+                    {showPracticeHighlights ? "악보에 표시됨\n" : "누르면 악보에 표시됩니다\n"}
+                    {focusRanges.length
+                      ? focusRanges
+                          .slice(0, 3)
+                          .map((range) =>
+                            `${formatFocusRangeScrollLabel(range)}${
+                              range.isVirtual ? " 전환" : ""
+                            }`
+                          )
+                          .join(" / ")
+                      : latestMistakeNoteIndices.length
+                        ? "최근 틀린 음표"
+                        : "표시할 취약 구간 없음"}
+                  </Text>
+                  <View style={styles.weakLegendRow}>
+                    <View style={[styles.weakLegendDot, styles.weakLegendSoft]} />
+                    <Text style={styles.weakLegendText}>{"취약 부분"}</Text>
+                    <View style={[styles.weakLegendDot, styles.weakLegendStrong]} />
+                    <Text style={styles.weakLegendText}>{"틀린 음"}</Text>
+                  </View>
+                  <Text style={styles.sidePracticeNoticeAction}>
+                    {showPracticeHighlights ? "표시 숨기기" : "악보에 표시하기"}
+                  </Text>
+                </>
+              </Pressable>
+            ) : null}
           </View>
-          <Pressable
-            style={[
-              styles.sidePracticeNotice,
-              showPracticeHighlights && styles.sidePracticeNoticeActive,
-            ]}
-            onPress={togglePracticeHighlights}
-          >
-            {focusRanges.length && !focusPracticeRange && focusPracticeMeasure === null ? (
-              <>
-                <Text style={styles.weakPracticeNoticeTitle}>{"조심해서 연주할 구간"}</Text>
-                <Text style={styles.weakPracticeNoticeText}>
-                  {showPracticeHighlights ? "악보에 표시됨\n" : "누르면 악보에 표시됩니다\n"}
-                  {focusRanges
-                    .slice(0, 3)
-                    .map((range) =>
-                      `${formatFocusRangeScrollLabel(range)}${
-                        range.isVirtual ? " 전환" : ""
-                      }`
-                    )
-                    .join(" / ")}
-                </Text>
-                <View style={styles.weakLegendRow}>
-                  <View style={[styles.weakLegendDot, styles.weakLegendSoft]} />
-                  <Text style={styles.weakLegendText}>{"취약 부분"}</Text>
-                  <View style={[styles.weakLegendDot, styles.weakLegendStrong]} />
-                  <Text style={styles.weakLegendText}>{"틀린 음"}</Text>
-                </View>
-                <Text style={styles.sidePracticeNoticeAction}>
-                  {showPracticeHighlights ? "표시 숨기기" : "악보에 표시하기"}
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text style={styles.weakPracticeNoticeTitle}>{"연습 정보"}</Text>
-                <Text style={styles.weakPracticeNoticeText}>
-                  {"전체 악보 스크롤\n4줄 단위 구분\n"}{measureCount}{"마디"}
-                </Text>
-              </>
-            )}
-          </Pressable>
-        </View>
+        ) : null}
       </View>
       <View style={styles.practiceActionBar}>
         <View style={styles.practiceActionBarContent}>
@@ -3208,10 +3370,10 @@ const styles = StyleSheet.create({
   loginScrollContent: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingVertical: 48,
-    paddingBottom: 96,
+    paddingTop: 48,
+    paddingBottom: 360,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
   },
   loginCard: {
     width: "100%",
@@ -3344,43 +3506,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "900",
   },
-  homeStatsGrid: {
-    marginHorizontal: 18,
-    marginBottom: 12,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  homeStatBox: {
-    flexBasis: "48%",
-    minHeight: 70,
-    borderRadius: 8,
-    padding: 12,
-    justifyContent: "center",
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#d8d2c4",
-  },
-  homeStatValue: {
-    color: "#1f6f5b",
-    fontSize: 26,
-    fontWeight: "900",
-  },
-  homeStatLabel: {
-    marginTop: 4,
-    color: "#66736b",
-    fontSize: 13,
-    fontWeight: "800",
-  },
   categoryList: {
     flex: 1,
     paddingHorizontal: 18,
-    paddingBottom: 14,
-    gap: 8,
+    paddingTop: 4,
+    paddingBottom: 12,
+    justifyContent: "flex-start",
+    gap: 10,
   },
   categoryButton: {
-    flex: 1,
-    minHeight: 84,
+    minHeight: 92,
+    maxHeight: 108,
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
@@ -3478,6 +3614,25 @@ const styles = StyleSheet.create({
   headerSpacer: {
     width: 54,
   },
+  practiceHeaderActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  practiceHeaderActionButton: {
+    minHeight: 36,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#1f6f5b",
+  },
+  practiceHeaderActionText: {
+    color: "#1f6f5b",
+    fontSize: 12,
+    fontWeight: "900",
+  },
   title: {
     fontSize: 22,
     fontWeight: "800",
@@ -3563,6 +3718,28 @@ const styles = StyleSheet.create({
     width: 180,
     gap: 10,
   },
+  practiceSideToggle: {
+    width: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#9db7aa",
+  },
+  practiceSideToggleIcon: {
+    color: "#1f6f5b",
+    fontSize: 28,
+    lineHeight: 30,
+    fontWeight: "900",
+  },
+  practiceSideToggleText: {
+    color: "#1f6f5b",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "900",
+  },
   sideBpmControl: {
     borderRadius: 8,
     padding: 12,
@@ -3593,11 +3770,50 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#9db7aa",
   },
+  sidePracticeInfo: {
+    flex: 0.75,
+    minHeight: 116,
+    borderRadius: 8,
+    padding: 11,
+    gap: 8,
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d8d2c4",
+  },
+  sidePracticeInfoTitle: {
+    color: "#66736b",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  sidePracticeMetricRow: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 7,
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#f4f1ea",
+  },
+  sidePracticeMetricLabel: {
+    color: "#66736b",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  sidePracticeMetricValue: {
+    color: "#1f2a25",
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: "900",
+  },
   sidePracticeNotice: {
     flex: 1,
+    minHeight: 138,
     borderRadius: 8,
-    padding: 12,
-    gap: 9,
+    padding: 11,
+    gap: 8,
+    justifyContent: "space-between",
     backgroundColor: "#fff7ea",
     borderWidth: 1,
     borderColor: "#d98b24",
@@ -3612,16 +3828,15 @@ const styles = StyleSheet.create({
     borderColor: "#b86412",
   },
   sidePracticeNoticeAction: {
-    marginTop: "auto",
-    minHeight: 38,
+    minHeight: 32,
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 9,
+    paddingVertical: 7,
     overflow: "hidden",
     textAlign: "center",
     color: "#ffffff",
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: "900",
     backgroundColor: "#9b5b12",
   },
@@ -3694,8 +3909,8 @@ const styles = StyleSheet.create({
   },
   practiceActionBarContent: {
     paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 10,
+    paddingTop: 7,
+    paddingBottom: 7,
   },
   placeholderPanel: {
     flex: 1,
@@ -3751,19 +3966,19 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   guidanceBox: {
-    borderRadius: 8,
-    padding: 14,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#d8d2c4",
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+    paddingLeft: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: "#b8ad9b",
   },
   guidanceTitle: {
     color: "#1f2a25",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "900",
   },
   guidanceText: {
-    marginTop: 6,
+    marginTop: 4,
     color: "#66736b",
     fontSize: 13,
     lineHeight: 19,
@@ -3780,6 +3995,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
     justifyContent: "center",
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -3812,15 +4030,12 @@ const styles = StyleSheet.create({
   focusMeasureTextBlock: {
     flex: 1,
   },
-  focusIntroBox: {
-    borderRadius: 8,
-    padding: 14,
+  focusIntroHeader: {
+    paddingVertical: 2,
     gap: 6,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#d8d2c4",
   },
   focusSongSelectButton: {
+    flex: 1,
     minHeight: 78,
     borderRadius: 8,
     paddingHorizontal: 16,
@@ -3868,18 +4083,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "900",
   },
-  focusReviewButton: {
-    flex: 1,
+  focusResetButton: {
+    width: 96,
     minHeight: 42,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#ffffff",
     borderWidth: 1,
-    borderColor: "#1f6f5b",
+    borderColor: "#b3261e",
   },
-  focusReviewButtonText: {
-    color: "#1f6f5b",
+  focusResetButtonText: {
+    color: "#b3261e",
     fontSize: 13,
     fontWeight: "900",
   },
@@ -3945,21 +4160,6 @@ const styles = StyleSheet.create({
   focusActionTextBlock: {
     flex: 1,
   },
-  clearHistoryButton: {
-    minHeight: 42,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#b3261e",
-  },
-  clearHistoryButtonText: {
-    color: "#b3261e",
-    fontSize: 12,
-    fontWeight: "900",
-  },
   achievementTabs: {
     flexDirection: "row",
     gap: 10,
@@ -3977,6 +4177,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderWidth: 1,
     borderColor: "#d8d2c4",
+  },
+  activeAchievementSummaryBox: {
+    backgroundColor: "#eef7f2",
+    borderColor: "#1f6f5b",
   },
   achievementSummaryValue: {
     color: "#1f6f5b",
@@ -4072,6 +4276,11 @@ const styles = StyleSheet.create({
     color: "#1f2a25",
     fontSize: 17,
     fontWeight: "900",
+  },
+  achievementListMeta: {
+    color: "#66736b",
+    fontSize: 12,
+    fontWeight: "800",
   },
   achievementStatusPill: {
     borderRadius: 8,
@@ -4348,6 +4557,21 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     textAlign: "center",
   },
+  tunerStartButton: {
+    alignSelf: "center",
+    minHeight: 54,
+    minWidth: 190,
+    borderRadius: 8,
+    paddingHorizontal: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1f6f5b",
+  },
+  tunerStartButtonText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "900",
+  },
   tunerStringList: {
     marginTop: 6,
     borderRadius: 8,
@@ -4500,7 +4724,7 @@ const styles = StyleSheet.create({
   },
   analysisButton: {
     flex: 1.5,
-    minHeight: 64,
+    minHeight: 52,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -4508,12 +4732,12 @@ const styles = StyleSheet.create({
   },
   analysisButtonText: {
     color: "#ffffff",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
   },
   resumeButton: {
     flex: 1,
-    minHeight: 64,
+    minHeight: 52,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -4521,12 +4745,12 @@ const styles = StyleSheet.create({
   },
   resumeButtonText: {
     color: "#ffffff",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
   },
   stopButton: {
-    minHeight: 64,
-    minWidth: 104,
+    minHeight: 52,
+    minWidth: 88,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -4536,7 +4760,7 @@ const styles = StyleSheet.create({
   },
   stopButtonText: {
     color: "#1f2a25",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
   },
   diagnosticBox: {

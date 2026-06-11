@@ -139,6 +139,53 @@ export function clearPracticeHistoryForSong(songId: string) {
   });
 }
 
+export function clearPracticeMistakesForSongMeasureRange(
+  songId: string,
+  fromMeasure: number,
+  toMeasure: number
+) {
+  db.withTransactionSync(() => {
+    db.runSync(
+      "DELETE FROM practice_mistakes WHERE song_id = ? AND measure BETWEEN ? AND ?",
+      [songId, fromMeasure, toMeasure]
+    );
+
+    const sessions = db.getAllSync<{ id: string; total_notes: number }>(
+      "SELECT id, total_notes FROM practice_sessions WHERE song_id = ?",
+      [songId]
+    );
+
+    for (const session of sessions) {
+      const aggregate = db.getFirstSync<{
+        wrong_note_count: number;
+        wrong_measure_count: number;
+      }>(
+        `
+        SELECT
+          COUNT(id) AS wrong_note_count,
+          COUNT(DISTINCT measure) AS wrong_measure_count
+        FROM practice_mistakes
+        WHERE session_id = ?
+        `,
+        [session.id]
+      );
+      const wrongNoteCount = aggregate?.wrong_note_count ?? 0;
+      const wrongMeasureCount = aggregate?.wrong_measure_count ?? 0;
+      const isMastered = getAccuracy(session.total_notes, wrongNoteCount) !== null
+        && (getAccuracy(session.total_notes, wrongNoteCount) ?? 0) >= 90;
+
+      db.runSync(
+        `
+        UPDATE practice_sessions
+        SET wrong_note_count = ?, wrong_measure_count = ?, is_mastered = ?, dirty = 1
+        WHERE id = ?
+        `,
+        [wrongNoteCount, wrongMeasureCount, isMastered ? 1 : 0, session.id]
+      );
+    }
+  });
+}
+
 export function getRecentSessions(limit = 20) {
   return db.getAllSync(
     `
@@ -425,6 +472,8 @@ export type SongAchievementSummary = {
   songId: string;
   title: string;
   sessionCount: number;
+  recentMonthSessionCount: number;
+  recentMonthAccuracy: number | null;
   lastPracticedAt: string | null;
   latestWrongMeasureCount: number | null;
   latestWrongNoteCount: number | null;
@@ -489,6 +538,7 @@ export function getMistakeNoteIndicesForSongMeasureRange(songId: string, fromMea
 }
 
 export function getSongAchievementSummaries(): SongAchievementSummary[] {
+  const recentMonthCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const songs = db.getAllSync<{ id: string; title: string }>(
     `
     SELECT id, title
@@ -517,11 +567,32 @@ export function getSongAchievementSummaries(): SongAchievementSummary[] {
       [song.id]
     );
     const latest = getLatestSessionForSong(song.id);
+    const recentMonth = db.getFirstSync<{
+      session_count: number;
+      total_notes: number | null;
+      wrong_note_count: number | null;
+    }>(
+      `
+      SELECT
+        COUNT(*) AS session_count,
+        SUM(total_notes) AS total_notes,
+        SUM(wrong_note_count) AS wrong_note_count
+      FROM practice_sessions
+      WHERE song_id = ? AND practiced_at >= ?
+      `,
+      [song.id, recentMonthCutoff]
+    );
+    const recentMonthTotalNotes = recentMonth?.total_notes ?? 0;
+    const recentMonthWrongNoteCount = recentMonth?.wrong_note_count ?? 0;
 
     return {
       songId: song.id,
       title: song.title,
       sessionCount: aggregate?.session_count ?? 0,
+      recentMonthSessionCount: recentMonth?.session_count ?? 0,
+      recentMonthAccuracy: recentMonthTotalNotes
+        ? getAccuracy(recentMonthTotalNotes, recentMonthWrongNoteCount)
+        : null,
       lastPracticedAt: aggregate?.last_practiced_at ?? null,
       latestWrongMeasureCount: latest?.wrong_measure_count ?? null,
       latestWrongNoteCount: latest?.wrong_note_count ?? null,
