@@ -23,6 +23,19 @@ function firstChild(node: OrderedXmlNode, name: string) {
   return childrenNamed(node, name)[0];
 }
 
+function descendantsNamed(node: OrderedXmlNode, name: string): OrderedXmlNode[] {
+  const matches: OrderedXmlNode[] = [];
+
+  for (const child of nodeChildren(node)) {
+    if (nodeName(child) === name) {
+      matches.push(child);
+    }
+    matches.push(...descendantsNamed(child, name));
+  }
+
+  return matches;
+}
+
 function textValue(node: OrderedXmlNode | undefined): string | undefined {
   if (!node) return undefined;
 
@@ -78,11 +91,11 @@ function divisionsToMs(duration: number, divisions: number, bpm: number) {
   const safeDivisions = safePositiveNumber(divisions, 1);
   const safeDuration = Number.isFinite(duration) ? duration : 0;
   const divisionMs = getDivisionMs(safeDivisions, bpm);
-  return quantizeMs(safeDuration * divisionMs, divisionMs);
+  return Math.max(0, safeDuration * divisionMs);
 }
 
 function quantizeMusicTime(valueMs: number, divisions: number, bpm: number) {
-  return quantizeMs(valueMs, getDivisionMs(divisions, bpm));
+  return quantizeMs(valueMs, getDivisionMs(divisions, bpm) / 96);
 }
 
 function beatUnitToQuarterMultiplier(beatUnit: string | undefined) {
@@ -104,6 +117,70 @@ function beatUnitToQuarterMultiplier(beatUnit: string | undefined) {
   }
 }
 
+function noteTypeToQuarterMultiplier(type: string | undefined) {
+  switch (type) {
+    case "maxima":
+      return 32;
+    case "long":
+      return 16;
+    case "breve":
+      return 8;
+    case "whole":
+      return 4;
+    case "half":
+      return 2;
+    case "quarter":
+      return 1;
+    case "eighth":
+      return 0.5;
+    case "16th":
+      return 0.25;
+    case "32nd":
+      return 0.125;
+    case "64th":
+      return 0.0625;
+    case "128th":
+      return 0.03125;
+    case "256th":
+      return 0.015625;
+    default:
+      return null;
+  }
+}
+
+function getDotMultiplier(noteNode: OrderedXmlNode) {
+  let multiplier = 1;
+  let addition = 0.5;
+  for (const _dot of childrenNamed(noteNode, "dot")) {
+    multiplier += addition;
+    addition /= 2;
+  }
+  return multiplier;
+}
+
+function getTimeModificationMultiplier(noteNode: OrderedXmlNode) {
+  const timeModification = firstChild(noteNode, "time-modification");
+  if (!timeModification) return 1;
+
+  const actualNotes = Number(childText(timeModification, "actual-notes") ?? 0);
+  const normalNotes = Number(childText(timeModification, "normal-notes") ?? 0);
+  if (!Number.isFinite(actualNotes) || !Number.isFinite(normalNotes)) return 1;
+  if (actualNotes <= 0 || normalNotes <= 0) return 1;
+  return normalNotes / actualNotes;
+}
+
+function getNotationDurationDivisions(noteNode: OrderedXmlNode, divisions: number) {
+  const typeMultiplier = noteTypeToQuarterMultiplier(childText(noteNode, "type"));
+  if (typeMultiplier === null) return null;
+
+  return (
+    safePositiveNumber(divisions, 1) *
+    typeMultiplier *
+    getDotMultiplier(noteNode) *
+    getTimeModificationMultiplier(noteNode)
+  );
+}
+
 function readTempoFromDirection(directionNode: OrderedXmlNode, fallback: number) {
   const soundTempo = attrValue(firstChild(directionNode, "sound") ?? directionNode, "tempo");
   if (soundTempo) return Number(soundTempo);
@@ -117,7 +194,9 @@ function readTempoFromDirection(directionNode: OrderedXmlNode, fallback: number)
 }
 
 function readDuration(node: OrderedXmlNode, divisions: number, bpm: number) {
-  const durationDivisions = Number(childText(node, "duration") ?? 0);
+  const rawDurationDivisions = Number(childText(node, "duration") ?? 0);
+  const notationDurationDivisions = getNotationDurationDivisions(node, divisions);
+  const durationDivisions = notationDurationDivisions ?? rawDurationDivisions;
 
   return {
     durationDivisions,
@@ -142,6 +221,16 @@ function readPitch(noteNode: OrderedXmlNode) {
     octave: octaveNumber,
     midi: pitchToMidi(step, alter, octaveNumber),
   };
+}
+
+function isPullOffContinuation(noteNode: OrderedXmlNode) {
+  if (firstChild(noteNode, "grace")) return true;
+
+  const pullOffs = descendantsNamed(noteNode, "pull-off");
+  return pullOffs.some((pullOff) => {
+    const type = String(attrValue(pullOff, "type") ?? "").toLowerCase();
+    return !type || type === "stop";
+  });
 }
 
 function repeatDirection(measureNode: OrderedXmlNode, direction: "forward" | "backward") {
@@ -245,8 +334,23 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
     let localCursorMs = 0;
     let lastNoteStartMs = 0;
     let measureEndMs = 0;
+    let pendingGroupStartMs: number | null = null;
+    let pendingGroupDurationMs: number | null = null;
     const candidatesByStart = new Map<string, PracticeNoteDraft>();
     const candidates: PracticeNoteDraft[] = [];
+
+    function flushPendingNoteGroup() {
+      if (pendingGroupStartMs === null || pendingGroupDurationMs === null) return;
+
+      localCursorMs = quantizeMusicTime(
+        pendingGroupStartMs + pendingGroupDurationMs,
+        divisions,
+        bpm
+      );
+      measureEndMs = Math.max(measureEndMs, localCursorMs);
+      pendingGroupStartMs = null;
+      pendingGroupDurationMs = null;
+    }
 
     for (const child of nodeChildren(measureNode)) {
       const name = nodeName(child);
@@ -277,12 +381,14 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
       }
 
       if (name === "backup") {
+        flushPendingNoteGroup();
         const { durationMs } = readDuration(child, divisions, bpm);
         localCursorMs = quantizeMusicTime(Math.max(0, localCursorMs - durationMs), divisions, bpm);
         continue;
       }
 
       if (name === "forward") {
+        flushPendingNoteGroup();
         const { durationMs } = readDuration(child, divisions, bpm);
         localCursorMs = quantizeMusicTime(localCursorMs + durationMs, divisions, bpm);
         measureEndMs = Math.max(measureEndMs, localCursorMs);
@@ -294,6 +400,9 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
       }
 
       const isChordTone = firstChild(child, "chord") !== undefined;
+      if (!isChordTone) {
+        flushPendingNoteGroup();
+      }
       const { durationDivisions, durationMs } = readDuration(child, divisions, bpm);
       const noteStartMs = quantizeMusicTime(
         isChordTone ? lastNoteStartMs : localCursorMs,
@@ -301,10 +410,12 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
         bpm
       );
       const pitch = readPitch(child);
+      const shouldSkipPracticeEvent = isPullOffContinuation(child);
 
       if (pitch) {
         const candidate: PracticeNoteDraft = {
           isRest: false,
+          skipPractice: shouldSkipPracticeEvent,
           measure,
           step: pitch.step,
           alter: pitch.alter,
@@ -348,10 +459,14 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
 
       if (!isChordTone) {
         lastNoteStartMs = noteStartMs;
-        localCursorMs = quantizeMusicTime(localCursorMs + durationMs, divisions, bpm);
-        measureEndMs = Math.max(measureEndMs, localCursorMs);
+        pendingGroupStartMs = noteStartMs;
+        pendingGroupDurationMs = durationMs;
+      } else if (pendingGroupStartMs !== null && pendingGroupDurationMs !== null) {
+        pendingGroupDurationMs = Math.min(pendingGroupDurationMs, durationMs);
       }
     }
+
+    flushPendingNoteGroup();
 
     const measureNotes = (useLowestChordNoteOnly
       ? Array.from(candidatesByStart.values())

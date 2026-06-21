@@ -1,4 +1,4 @@
-import { db } from "./sqlite";
+﻿import { db, getPublicSongId, getScopedSongId, getScopedSongIdPrefix } from "./sqlite";
 import { PracticeMistakeDraft, SavedPracticeSession } from "../types/practice";
 
 type SavePracticeSessionInput = {
@@ -32,7 +32,7 @@ function getHighAccuracyStreakWithoutLowBreak(songId: string) {
     ORDER BY practiced_at DESC
     LIMIT 20
     `,
-    [songId]
+    [getScopedSongId(songId)]
   );
 
   let highAccuracyCount = 0;
@@ -73,7 +73,7 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
       `,
       [
         id,
-        input.songId,
+        getScopedSongId(input.songId),
         practicedAt,
         input.totalNotes,
         input.wrongMeasureCount,
@@ -103,7 +103,7 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
         [
           createId("mistake"),
           id,
-          mistake.songId,
+          getScopedSongId(mistake.songId),
           mistake.measure,
           mistake.noteIndex,
           mistake.expectedMidi,
@@ -134,8 +134,8 @@ export function savePracticeSession(input: SavePracticeSessionInput): SavedPract
 
 export function clearPracticeHistoryForSong(songId: string) {
   db.withTransactionSync(() => {
-    db.runSync("DELETE FROM practice_mistakes WHERE song_id = ?", [songId]);
-    db.runSync("DELETE FROM practice_sessions WHERE song_id = ?", [songId]);
+    db.runSync("DELETE FROM practice_mistakes WHERE song_id = ?", [getScopedSongId(songId)]);
+    db.runSync("DELETE FROM practice_sessions WHERE song_id = ?", [getScopedSongId(songId)]);
   });
 }
 
@@ -147,12 +147,12 @@ export function clearPracticeMistakesForSongMeasureRange(
   db.withTransactionSync(() => {
     db.runSync(
       "DELETE FROM practice_mistakes WHERE song_id = ? AND measure BETWEEN ? AND ?",
-      [songId, fromMeasure, toMeasure]
+      [getScopedSongId(songId), fromMeasure, toMeasure]
     );
 
     const sessions = db.getAllSync<{ id: string; total_notes: number }>(
       "SELECT id, total_notes FROM practice_sessions WHERE song_id = ?",
-      [songId]
+      [getScopedSongId(songId)]
     );
 
     for (const session of sessions) {
@@ -191,10 +191,11 @@ export function getRecentSessions(limit = 20) {
     `
     SELECT *
     FROM practice_sessions
+    WHERE song_id LIKE ?
     ORDER BY practiced_at DESC
     LIMIT ?
     `,
-    [limit]
+    [`${getScopedSongIdPrefix()}%`, limit]
   );
 }
 
@@ -253,7 +254,7 @@ export function getFocusMeasuresForSong(songId: string, limit = 3): FocusMeasure
     ORDER BY mistakeCount DESC, measure ASC
     LIMIT ?
     `,
-    [songId, limit]
+    [getScopedSongId(songId), limit]
   );
 }
 
@@ -284,7 +285,7 @@ export function getFocusRangesForSong(songId: string, limit = 5): FocusRange[] {
     HAVING COUNT(DISTINCT session_id) >= 2
     ORDER BY measure ASC
     `,
-    [songId]
+    [getScopedSongId(songId)]
   );
 
   const ranges: FocusRange[] = [];
@@ -327,7 +328,7 @@ export function getRecentPracticeSessionIdsForSong(songId: string, limit = 3) {
     ORDER BY practiced_at DESC
     LIMIT ?
     `,
-    [songId, limit]
+    [getScopedSongId(songId), limit]
   ).map((session) => session.id);
 }
 
@@ -347,7 +348,7 @@ export function getRecentFocusMistakesForSong(songId: string, sessionIds: string
     GROUP BY session_id, measure, note_index
     ORDER BY measure ASC, note_index ASC
     `,
-    [songId, ...sessionIds]
+    [getScopedSongId(songId), ...sessionIds]
   );
 }
 
@@ -376,7 +377,7 @@ export function getWeakPracticeSessionsForSong(songId: string, limit = 8): WeakP
     ORDER BY actual_failed_note_count DESC, actual_wrong_measure_count DESC, ps.practiced_at DESC
     LIMIT ?
     `,
-    [songId, limit]
+    [getScopedSongId(songId), limit]
   );
 
   return sessions.map((session) => {
@@ -423,7 +424,7 @@ export function getLatestSessionForSong(songId: string) {
     ORDER BY practiced_at DESC
     LIMIT 1
     `,
-    [songId]
+    [getScopedSongId(songId)]
   );
 
   if (!latest) return null;
@@ -443,7 +444,7 @@ export function getLatestMistakeNoteIndicesForSong(songId: string) {
     ORDER BY practiced_at DESC
     LIMIT 1
     `,
-    [songId]
+    [getScopedSongId(songId)]
   );
 
   if (!latestSession) return [];
@@ -502,7 +503,7 @@ export function getSessionsForSong(songId: string, limit = 10): SongPracticeSess
     ORDER BY practiced_at DESC
     LIMIT ?
     `,
-    [songId, limit]
+    [getScopedSongId(songId), limit]
   ).map((session) => ({
     id: session.id,
     practicedAt: session.practiced_at,
@@ -521,7 +522,7 @@ export function getMistakeNoteIndicesForSongMeasure(songId: string, measure: num
     WHERE song_id = ? AND measure = ?
     ORDER BY note_index ASC
     `,
-    [songId, measure]
+    [getScopedSongId(songId), measure]
   ).map((row) => row.note_index);
 }
 
@@ -533,7 +534,7 @@ export function getMistakeNoteIndicesForSongMeasureRange(songId: string, fromMea
     WHERE song_id = ? AND measure BETWEEN ? AND ?
     ORDER BY note_index ASC
     `,
-    [songId, fromMeasure, toMeasure]
+    [getScopedSongId(songId), fromMeasure, toMeasure]
   ).map((row) => row.note_index);
 }
 
@@ -543,9 +544,10 @@ export function getSongAchievementSummaries(): SongAchievementSummary[] {
     `
     SELECT id, title
     FROM songs
-    WHERE xml_content IS NOT NULL AND xml_content != ''
+    WHERE id LIKE ? AND xml_content IS NOT NULL AND xml_content != ''
     ORDER BY updated_at DESC
-    `
+    `,
+    [`${getScopedSongIdPrefix()}%`]
   );
 
   return songs.map((song) => {
@@ -586,7 +588,7 @@ export function getSongAchievementSummaries(): SongAchievementSummary[] {
     const recentMonthWrongNoteCount = recentMonth?.wrong_note_count ?? 0;
 
     return {
-      songId: song.id,
+      songId: getPublicSongId(song.id),
       title: song.title,
       sessionCount: aggregate?.session_count ?? 0,
       recentMonthSessionCount: recentMonth?.session_count ?? 0,
@@ -606,3 +608,5 @@ export function getSongAchievementSummaries(): SongAchievementSummary[] {
     };
   });
 }
+
+

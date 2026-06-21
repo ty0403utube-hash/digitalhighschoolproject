@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioModule,
   createAudioPlayer,
@@ -98,7 +98,6 @@ const LOCAL_AUTH_USER = {
 const ACCURACY_TEST_SONG_TITLE = "\uC815\uD655\uB3C4 \uD655\uC778 \uACE1";
 const HARMONIC_CORRECTION_FACTORS = [1, 2, 3, 4];
 const GUITAR_SOUNDING_OCTAVE_OFFSET = -12;
-const USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT = true;
 const TUNER_STRINGS = [
   { name: "1번줄 E", midi: 64 },
   { name: "2번줄 B", midi: 59 },
@@ -113,7 +112,7 @@ type NoteFeedback = {
   labelColor: string;
 };
 export default function App() {
-  const SAME_START_MS = 2;
+  const SAME_BEAT_MS = 80;
   const scoreRef = useRef<ScoreWebViewHandle>(null);
   const renderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -937,11 +936,6 @@ export default function App() {
     }
     return 0;
   }
-  function findNextPracticeEventIndexFrom(startIndex: number) {
-    const boundedStart = Math.max(0, Math.min(notes.length - 1, startIndex));
-    const nextIndex = notes.findIndex((note, index) => index >= boundedStart && !note.skipPractice);
-    return nextIndex >= 0 ? nextIndex : boundedStart;
-  }
   async function stopAnalysis(options?: { saveSession?: boolean }) {
     if (options?.saveSession && !sessionSavedRef.current && (isListeningRef.current || sessionMistakesRef.current.length > 0)) {
       await saveCurrentPracticeSession();
@@ -979,12 +973,7 @@ export default function App() {
   }
   function beginCurrentNote() {
     stopNoteTimer();
-    const practiceIndex = findNextPracticeEventIndexFrom(currentIndexRef.current);
-    if (practiceIndex !== currentIndexRef.current) {
-      currentIndexRef.current = practiceIndex;
-      setCurrentIndex(practiceIndex);
-    }
-    const note = notes[practiceIndex];
+    const note = notes[currentIndexRef.current];
     if (!note) return;
     matchedRef.current = false;
     noteStartedAtRef.current = Date.now();
@@ -1009,23 +998,30 @@ export default function App() {
         scoreRef.current?.setNoteLabel(targetNote.index, "\uC27C", "#1565c0");
       }
     }
-    const judgmentNotes = getJudgmentNotesAtSameStart(note);
-    setAnalysisStatus(note.isRest ? "\uC27C\uD45C \uC9C0\uB098\uAC00\uB294 \uC911" : `${judgmentNotes.map(formatNoteName).join("/")} \uC5F0\uC8FC`);
+    setAnalysisStatus(note.isRest ? "\uC27C\uD45C \uC9C0\uB098\uAC00\uB294 \uC911" : `${targetNotes.map(formatNoteName).join("/")} \uC5F0\uC8FC`);
     noteTimerRef.current = setInterval(() => {
       const activeNote = notes[currentIndexRef.current];
       if (!activeNote) return;
       const elapsed = Date.now() - noteStartedAtRef.current;
       const activeEventDurationMs = getEventDurationMs(activeNote);
       for (const targetNote of getNotesAtSameStart(activeNote)) {
-        const progress = elapsed / activeEventDurationMs;
+        const progress = elapsed / scaleDurationForPractice(targetNote, targetNote.durationMs);
         scoreRef.current?.setNoteProgress(targetNote.index, progress);
       }
       if (activeNote.isRest && elapsed >= activeEventDurationMs) {
         passCurrentNote();
         return;
       }
-      if (elapsed >= activeEventDurationMs) {
-        matchedRef.current ? passCurrentNote() : failCurrentNote();
+      if (matchedRef.current && elapsed >= activeEventDurationMs) {
+        passCurrentNote();
+        return;
+      }
+      if (!matchedRef.current && elapsed >= activeEventDurationMs + getMissGraceMs(activeEventDurationMs)) {
+        if (matchedRef.current) {
+          passCurrentNote();
+        } else {
+          failCurrentNote();
+        }
       }
     }, 50);
   }
@@ -1046,21 +1042,13 @@ export default function App() {
       return nextBpm;
     });
   }
-  function getBeatUnitQuarterLength(beatType: number) {
-    const safeBeatType = Number.isFinite(beatType) && beatType > 0 ? beatType : 4;
-    return 4 / safeBeatType;
-  }
-  function getNoteDurationForPractice(
-    note: Pick<PracticeNote, "durationDivisions" | "divisions" | "beatType">
-  ) {
+  function getPracticeTimeScale(note: Pick<PracticeNote, "bpm">) {
     const activePracticeBpm = clampPracticeBpm(practiceBpmRef.current);
-    const safeDivisions = Number.isFinite(note.divisions) && note.divisions > 0 ? note.divisions : 1;
-    const safeDurationDivisions = Number.isFinite(note.durationDivisions)
-      ? note.durationDivisions
-      : 0;
-    const quarterCount = safeDurationDivisions / safeDivisions;
-    const beatCount = quarterCount / getBeatUnitQuarterLength(note.beatType);
-    return Math.max(40, beatCount * (60000 / activePracticeBpm));
+    const sourceBpm = Number.isFinite(note.bpm) && note.bpm > 0 ? note.bpm : activePracticeBpm;
+    return sourceBpm / activePracticeBpm;
+  }
+  function scaleDurationForPractice(note: Pick<PracticeNote, "bpm">, durationMs: number) {
+    return Math.max(40, durationMs * getPracticeTimeScale(note));
   }
   function getAttackWindowMs(durationMs: number) {
     return Math.min(
@@ -1087,7 +1075,7 @@ export default function App() {
     if (!isListeningRef.current || currentIndexRef.current !== noteIndex || matchedRef.current) return;
     const activeNote = notes[noteIndex];
     if (!activeNote) return;
-    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
+    const candidateNotes = getNotesAtSameStart(activeNote);
     const samples = attackPitchSamplesRef.current.filter(
       (sample) => sample.clarity >= PITCH_JUDGMENT.minAttackClarity
     );
@@ -1113,61 +1101,41 @@ export default function App() {
       setLastPlayedMidi(
         `${bestSample.match.result.playedMidi} (${Math.round(bestSample.match.result.cents)} cents)`
       );
-      setAnalysisStatus(`${formatNoteName(bestSample.match.note)} 감지`);
+      setAnalysisStatus(`Attack matched ${formatNoteName(bestSample.match.note)}`);
       setDiagnosticStatus(
         `어택 OK / ${bestSample.sample.elapsedMs}ms / ${Math.round(bestSample.match.result.cents)} cents / ${Math.round(matchRatio * 100)}%`
       );
-      setMatchedEventFeedback(activeNote, "OK");
     }
   }
   function getNextIndexAfterSameStart(note: NonNullable<typeof currentNote>) {
     const nextEventIndex = findNextEventIndex(note);
     return nextEventIndex >= 0 ? nextEventIndex : notes.length;
   }
-  function isRepeatBoundary(note: NonNullable<typeof currentNote>, nextIndex: number) {
-    const nextNote = notes[nextIndex];
-    return Boolean(nextNote && nextNote.measure < note.measure);
-  }
-  async function prepareNewRepeatPass() {
-    await saveCurrentPracticeSession();
-    sessionMistakesRef.current = [];
-    sessionAttemptedEventKeysRef.current = new Set();
-    noteFeedbackRef.current = new Map();
-    sessionSavedRef.current = false;
-    await startPerformanceRecording();
-    scoreRef.current?.resetScore();
-    setScoreViewVersion((version) => version + 1);
-    setResultSummary("도돌이표 이후 새 연습 중");
-  }
-  function scheduleNextPracticeNote(delayMs: number) {
-    setTimeout(() => {
-      if (isListeningRef.current) {
-        beginCurrentNote();
-      }
-    }, delayMs);
-  }
-  async function continueToNextPracticeEvent(
-    note: NonNullable<typeof currentNote>,
-    nextIndex: number,
-    status: string
-  ) {
-    const crossedRepeat = isRepeatBoundary(note, nextIndex);
-    if (crossedRepeat) {
-      await prepareNewRepeatPass();
-    }
-    currentIndexRef.current = nextIndex;
-    setCurrentIndex(nextIndex);
-    setCanResumeFromMistake(false);
-    setAnalysisStatus(crossedRepeat ? "도돌이표 이후 새 악보" : status);
-    scheduleNextPracticeNote(crossedRepeat ? 450 : 0);
-  }
   function getEventDurationMs(note: NonNullable<typeof currentNote>) {
     const groupNotes = getNotesAtSameStart(note);
-    return Math.min(...groupNotes.map((groupNote) => getNoteDurationForPractice(groupNote)));
+    const nextIndex = findNextEventIndex(note);
+    const nextNote = nextIndex >= 0 ? notes[nextIndex] : undefined;
+
+    if (nextNote && nextNote.startMs > note.startMs + SAME_BEAT_MS) {
+      return Math.max(80, scaleDurationForPractice(note, nextNote.startMs - note.startMs));
+    }
+
+    return Math.min(
+      ...groupNotes.map((groupNote) => scaleDurationForPractice(groupNote, groupNote.durationMs))
+    );
   }
   function findNextEventIndex(note: NonNullable<typeof currentNote>) {
     return notes.findIndex(
-      (candidate) => !candidate.skipPractice && candidate.startMs > note.startMs + SAME_START_MS
+      (candidate) => candidate.startMs > note.startMs + SAME_BEAT_MS
+    );
+  }
+  function getDelayToNextEvent(note: NonNullable<typeof currentNote>, nextIndex: number) {
+    const nextNote = notes[nextIndex];
+    if (!nextNote) return 0;
+
+    return Math.max(
+      0,
+      scaleDurationForPractice(note, nextNote.startMs - note.startMs) - getEventDurationMs(note)
     );
   }
   function shouldFinishFocusPractice(nextIndex: number) {
@@ -1183,36 +1151,24 @@ export default function App() {
     return !nextNote || nextNote.measure !== focusPracticeMeasure;
   }
   function getPracticeEventKey(note: NonNullable<typeof currentNote>) {
-    return `${note.measure}:${Math.round(note.startMs)}`;
+    return `${note.measure}:${Math.round(note.startMs / SAME_BEAT_MS)}`;
   }
   function markPracticeEventAttempted(note: NonNullable<typeof currentNote>) {
     if (getNotesAtSameStart(note).every((groupNote) => groupNote.isRest)) return;
     sessionAttemptedEventKeysRef.current.add(getPracticeEventKey(note));
   }
-  function finishCurrentEvent(matched: boolean) {
+  function passCurrentNote() {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
     if (!note) return;
     const groupNotes = getNotesAtSameStart(note);
     markPracticeEventAttempted(note);
-    if (matched) {
-      setMatchedEventFeedback(note, "OK");
-    } else {
-      const diagnostic = getFailDiagnostic(note);
-      for (const groupNote of groupNotes) {
-        setNoteFeedback(groupNote.index, {
-          noteColor: "#e53935",
-          label: getScoreDiagnosticLabel(diagnostic),
-          labelColor: "#c62828",
-        });
-      }
-      setDiagnosticStatus(diagnostic);
-      const bestPitch = currentNoteBestPitchRef.current;
-      recordMistake(
-        groupNotes[0] ?? note,
-        bestPitch ? "wrong_pitch" : "timeout",
-        bestPitch ? Math.round(hzToMidi(bestPitch.hz)) : null
-      );
+    for (const groupNote of groupNotes) {
+      setNoteFeedback(groupNote.index, {
+        noteColor: "#2e7d32",
+        label: groupNote.isRest ? "\uC27C" : "OK",
+        labelColor: "#2e7d32",
+      });
     }
     const nextIndex = getNextIndexAfterSameStart(note);
     if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
@@ -1221,27 +1177,64 @@ export default function App() {
       setCurrentIndex(Math.min(nextIndex, notes.length - 1));
       setIsListening(false);
       setCanResumeFromMistake(false);
+      setAnalysisStatus(isFocusedPractice ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC" : "\uC644\uB8CC");
+      void saveCurrentPracticeSession();
+      return;
+    }
+    currentIndexRef.current = nextIndex;
+    setCurrentIndex(nextIndex);
+    setAnalysisStatus("\uC815\uD655");
+    const restDelayMs = getDelayToNextEvent(note, nextIndex);
+    setTimeout(() => {
+      if (isListeningRef.current) {
+        beginCurrentNote();
+      }
+    }, restDelayMs);
+  }
+  function failCurrentNote() {
+    stopNoteTimer();
+    const note = notes[currentIndexRef.current];
+    if (!note) return;
+    const groupNotes = getNotesAtSameStart(note);
+    markPracticeEventAttempted(note);
+    const diagnostic = getFailDiagnostic(note);
+    for (const groupNote of groupNotes) {
+      setNoteFeedback(groupNote.index, {
+        noteColor: "#e53935",
+        label: getScoreDiagnosticLabel(diagnostic),
+        labelColor: "#c62828",
+      });
+    }
+    setDiagnosticStatus(diagnostic);
+    const bestPitch = currentNoteBestPitchRef.current;
+    recordMistake(
+      note,
+      bestPitch ? "wrong_pitch" : "timeout",
+      bestPitch ? Math.round(hzToMidi(bestPitch.hz)) : null
+    );
+    const nextIndex = getNextIndexAfterSameStart(note);
+    if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
+      const isFocusedPractice = customNoteRange || focusPracticeRange || focusPracticeMeasure !== null;
+      currentIndexRef.current = notes.length - 1;
+      setCurrentIndex(Math.min(nextIndex, notes.length - 1));
+      setIsListening(false);
+      setCanResumeFromMistake(false);
       setAnalysisStatus(
-        isFocusedPractice
-          ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC"
-          : matched
-            ? "\uC644\uB8CC"
-            : "\uC2E4\uC218 \uD3EC\uD568 \uC644\uB8CC"
+        isFocusedPractice ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC" : "\uC2E4\uC218 \uD3EC\uD568 \uC644\uB8CC"
       );
       void saveCurrentPracticeSession();
       return;
     }
-    void continueToNextPracticeEvent(
-      note,
-      nextIndex,
-      matched ? "\uC815\uD655" : "\uB193\uCE68 - \uACC4\uC18D \uC9C4\uD589"
-    );
-  }
-  function passCurrentNote() {
-    finishCurrentEvent(true);
-  }
-  function failCurrentNote() {
-    finishCurrentEvent(false);
+    currentIndexRef.current = nextIndex;
+    setCurrentIndex(nextIndex);
+    setCanResumeFromMistake(false);
+    setAnalysisStatus("\uB193\uCE68 - \uACC4\uC18D \uC9C4\uD589");
+    const restDelayMs = getDelayToNextEvent(note, nextIndex);
+    setTimeout(() => {
+      if (isListeningRef.current) {
+        beginCurrentNote();
+      }
+    }, restDelayMs);
   }
   function handlePitch(payload: { hz: number; clarity: number; rms?: number; isAttack?: boolean }) {
     receivedPitchRef.current = true;
@@ -1305,7 +1298,7 @@ export default function App() {
     if (!isListening || !activeNote || activeNote.isRest || !payload.pitchClasses.length) {
       return;
     }
-    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
+    const candidateNotes = getNotesAtSameStart(activeNote);
     const strongestPeak = payload.peaks[0];
     if (!strongestPeak || strongestPeak.db < FFT_JUDGMENT.minPeakDb) {
       return;
@@ -1324,12 +1317,16 @@ export default function App() {
       setLastPlayedMidi(
         fftMatch.peak ? `FFT ${fftMatch.peak.hz} Hz / ${fftMatch.peak.db} dB` : "FFT matched"
       );
-      setAnalysisStatus(`${formatNoteName(fftMatch.note)} 감지`);
+      setAnalysisStatus(`FFT matched ${formatNoteName(fftMatch.note)}`);
       setDiagnosticStatus(
         `FFT \uBCF4\uC870 \uAC10\uC9C0 / ${Date.now() - noteStartedAtRef.current}ms / ${fftMatch.peak.db} dB / ${Math.round(fftMatch.result.cents)} cents`
       );
+      setNoteFeedback(fftMatch.note.index, {
+        noteColor: "#2e7d32",
+        label: "FFT OK",
+        labelColor: "#2e7d32",
+      });
       matchedRef.current = true;
-      setMatchedEventFeedback(activeNote, "FFT OK");
     }
   }
   function matchPitchForNote(
@@ -1339,7 +1336,7 @@ export default function App() {
     if (payload.clarity < PITCH_JUDGMENT.minDirectClarity) {
       return;
     }
-    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
+    const candidateNotes = getNotesAtSameStart(activeNote);
     const closestMatch = getClosestPitchMatch(payload.hz, candidateNotes);
     const result = closestMatch.result;
     const elapsedMs = Date.now() - noteStartedAtRef.current;
@@ -1360,14 +1357,18 @@ export default function App() {
         setDiagnosticStatus(`지속음 제외 / ${elapsedMs}ms / 기타 어택 없음`);
         return;
       }
-      setAnalysisStatus(`${formatNoteName(closestMatch.note)} 감지`);
+      setAnalysisStatus(`Matched ${formatNoteName(closestMatch.note)}`);
       setDiagnosticStatus(
         `\uC74C OK / ${elapsedMs}ms / ${Math.round(result.cents)} cents`
       );
+      setNoteFeedback(closestMatch.note.index, {
+        noteColor: "#2e7d32",
+        label: "OK",
+        labelColor: "#2e7d32",
+      });
       matchedRef.current = true;
-      setMatchedEventFeedback(activeNote, "OK");
     } else {
-      setAnalysisStatus(`${candidateNotes.map(formatNoteName).join("/")} 대기 중`);
+      setAnalysisStatus(`Listening for ${candidateNotes.map(formatNoteName).join("/")}`);
       setDiagnosticStatus(
         `\uC74C \uB2E4\uB984 / ${elapsedMs}ms / ${Math.round(result.cents)} cents`
       );
@@ -1408,7 +1409,7 @@ export default function App() {
       return `\uD53C\uCE58 \uAC10\uC9C0 \uC5C6\uC74C / ${elapsed}ms / \uD5C8\uC6A9 ${allowedMs}ms`;
     }
     const pitchElapsed = Math.max(0, payload.receivedAt - noteStartedAtRef.current);
-    const candidateNotes = getJudgmentNotesAtSameStart(note);
+    const candidateNotes = getNotesAtSameStart(note);
     const closestMatch = getClosestPitchMatch(payload.hz, candidateNotes);
     const cents = Math.round(closestMatch.result.cents);
     if (pitchElapsed > allowedMs) {
@@ -1432,15 +1433,6 @@ export default function App() {
     scoreRef.current?.setNoteColor(index, feedback.noteColor);
     scoreRef.current?.setNoteLabel(index, feedback.label, feedback.labelColor);
   }
-  function setMatchedEventFeedback(note: NonNullable<typeof currentNote>, label: string) {
-    for (const groupNote of getNotesAtSameStart(note)) {
-      setNoteFeedback(groupNote.index, {
-        noteColor: "#2e7d32",
-        label: groupNote.isRest ? "\uC27C" : label,
-        labelColor: "#2e7d32",
-      });
-    }
-  }
   function togglePracticeHighlights() {
     if (showPracticeHighlights) {
       setShowPracticeHighlights(false);
@@ -1449,10 +1441,7 @@ export default function App() {
       return;
     }
     setShowPracticeHighlights(true);
-    setTimeout(() => {
-      applyWeakScoreHighlights(true);
-      applyLatestMistakeHighlights(true);
-    }, 0);
+    setTimeout(() => applyWeakScoreHighlights(true), 0);
   }
   function applyWeakScoreHighlights(force = false) {
     if (!force && !showPracticeHighlights) return;
@@ -1479,7 +1468,11 @@ export default function App() {
   function applyLatestMistakeHighlights(force = false) {
     if (!force && !showPracticeHighlights) return;
     if (focusPracticeRange || focusPracticeMeasure !== null) return;
+    const weakNoteIndices = new Set(
+      focusRanges.flatMap((range) => range.highlightNoteIndices ?? [])
+    );
     for (const index of latestMistakeNoteIndices) {
+      if (weakNoteIndices.size && !weakNoteIndices.has(index)) continue;
       scoreRef.current?.setNoteColor(index, "#c2410c");
       scoreRef.current?.setNoteLabel(index, "");
     }
@@ -1546,23 +1539,13 @@ export default function App() {
   }
   function getNotesAtSameStart(note: NonNullable<typeof currentNote>) {
     const sameStartNotes = notes.filter(
-      (candidate) => !candidate.skipPractice && Math.abs(candidate.startMs - note.startMs) <= SAME_START_MS
+      (candidate) => Math.abs(candidate.startMs - note.startMs) < SAME_BEAT_MS
     );
     if (note.isRest) {
       return sameStartNotes.filter((candidate) => candidate.isRest);
     }
     const playableNotes = sameStartNotes.filter((candidate) => !candidate.isRest);
     return playableNotes.length ? playableNotes : sameStartNotes;
-  }
-  function getJudgmentNotesAtSameStart(note: NonNullable<typeof currentNote>) {
-    const playableNotes = getNotesAtSameStart(note).filter((candidate) => !candidate.isRest);
-    if (!playableNotes.length) return getNotesAtSameStart(note);
-    if (!USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT || playableNotes.length === 1) return playableNotes;
-    return [
-      playableNotes.reduce((highest, candidate) =>
-        candidate.midi > highest.midi ? candidate : highest
-      ),
-    ];
   }
   function formatNoteName(note: NonNullable<typeof currentNote>) {
     if (note.isRest) return "\uC27C\uD45C";
@@ -1717,7 +1700,7 @@ export default function App() {
       : "\uC5C6\uC74C";
   }
   function getNoteBasedFocusInsights(nextSongId: string, noteSource: PracticeNote[]) {
-    const playableNotes = noteSource.filter((note) => !note.isRest && !note.skipPractice);
+    const playableNotes = noteSource.filter((note) => !note.isRest);
     const sessionIds = getRecentPracticeSessionIdsForSong(nextSongId, 3);
     const sessionCount = Math.max(1, sessionIds.length);
     const recentMistakes = getRecentFocusMistakesForSong(nextSongId, sessionIds);

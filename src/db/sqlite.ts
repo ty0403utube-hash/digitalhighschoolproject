@@ -1,6 +1,39 @@
-import * as SQLite from "expo-sqlite";
+﻿import * as SQLite from "expo-sqlite";
 
 export const db = SQLite.openDatabaseSync("guitar_practice.db");
+let activeDbUserId = "local";
+
+function encodeDbUserId(userId: string) {
+  return Array.from(userId)
+    .map((char) => char.charCodeAt(0).toString(16).padStart(4, "0"))
+    .join("");
+}
+
+export function setActiveDbUserId(userId: string | null | undefined) {
+  activeDbUserId = userId?.trim().toLowerCase() || "local";
+}
+
+export function getScopedSongIdPrefix() {
+  return `user_${encodeDbUserId(activeDbUserId)}__`;
+}
+
+export function getScopedSongId(songId: string) {
+  const prefix = getScopedSongIdPrefix();
+  return songId.startsWith(prefix) ? songId : `${prefix}${songId}`;
+}
+
+export function getPublicSongId(songId: string) {
+  const prefix = getScopedSongIdPrefix();
+  return songId.startsWith(prefix) ? songId.slice(prefix.length) : songId;
+}
+export function clearActiveDbUserData() {
+  const scopedSongPattern = `${getScopedSongIdPrefix()}%`;
+  db.withTransactionSync(() => {
+    db.runSync("DELETE FROM practice_mistakes WHERE song_id LIKE ?", [scopedSongPattern]);
+    db.runSync("DELETE FROM practice_sessions WHERE song_id LIKE ?", [scopedSongPattern]);
+    db.runSync("DELETE FROM songs WHERE id LIKE ?", [scopedSongPattern]);
+  });
+}
 
 export function initDb() {
   db.execSync(`
@@ -74,3 +107,6 @@ export function initDb() {
     // Existing databases already have this column.
   }
 }
+
+
+

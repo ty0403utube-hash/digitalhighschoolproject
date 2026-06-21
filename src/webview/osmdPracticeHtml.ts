@@ -63,6 +63,9 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     let lastOnsetAt = 0;
     let scoreTapHandlersInstalled = false;
     let lastScoreTapSentAt = 0;
+    let pressStart = null;
+    let pressMoved = false;
+    let suppressClickUntil = 0;
     const PITCH_BUFFER_SIZE = 4096;
     const MIN_PITCH_HZ = 45;
     const MAX_PITCH_HZ = 1600;
@@ -72,9 +75,42 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     const ONSET_RATIO = 1.6;
     const ONSET_WINDOW_MS = 160;
     const YIN_THRESHOLD = 0.24;
+    const TAP_MOVE_TOLERANCE_PX = 10;
+    const TAP_MAX_DURATION_MS = 700;
 
     function send(type, payload) {
       window.ReactNativeWebView.postMessage(JSON.stringify({ type, payload }));
+    }
+
+    function beginPress(clientX, clientY) {
+      pressStart = { clientX, clientY, at: Date.now() };
+      pressMoved = false;
+    }
+
+    function updatePress(clientX, clientY) {
+      if (!pressStart) return;
+      const dx = clientX - pressStart.clientX;
+      const dy = clientY - pressStart.clientY;
+      if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_TOLERANCE_PX) {
+        pressMoved = true;
+      }
+    }
+
+    function finishPress(clientX, clientY) {
+      if (!pressStart) return true;
+      updatePress(clientX, clientY);
+      const elapsed = Date.now() - pressStart.at;
+      const isTap = !pressMoved && elapsed <= TAP_MAX_DURATION_MS;
+      if (!isTap) {
+        suppressClickUntil = Date.now() + 350;
+      }
+      pressStart = null;
+      pressMoved = false;
+      return isTap;
+    }
+
+    function shouldIgnoreClick() {
+      return Date.now() < suppressClickUntil;
     }
 
     function showError(error) {
@@ -541,6 +577,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       element.style.cursor = "pointer";
       element.style.pointerEvents = "auto";
       element.addEventListener("click", function(event) {
+        if (shouldIgnoreClick()) return;
         event.preventDefault();
         event.stopPropagation();
         send("NOTE_PRESS", { index });
@@ -583,18 +620,40 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
         hit.setAttribute("width", String(width));
         hit.setAttribute("height", String(height));
         hit.setAttribute("rx", "6");
-        hit.setAttribute("fill", "rgba(255, 160, 0, 0.01)");
+        hit.setAttribute("fill", "transparent");
+        hit.setAttribute("fill-opacity", "0");
         hit.setAttribute("stroke", "none");
         hit.setAttribute("pointer-events", "all");
         hit.style.cursor = "pointer";
         hit.addEventListener("click", function(event) {
+          if (shouldIgnoreClick()) return;
           event.preventDefault();
           event.stopPropagation();
           send("NOTE_PRESS", { index });
         });
+        hit.addEventListener("touchstart", function(event) {
+          const touch = event.touches && event.touches[0];
+          if (!touch) return;
+          beginPress(touch.clientX, touch.clientY);
+        }, { passive: true });
+        hit.addEventListener("touchmove", function(event) {
+          const touch = event.touches && event.touches[0];
+          if (!touch) return;
+          updatePress(touch.clientX, touch.clientY);
+        }, { passive: true });
         hit.addEventListener("touchend", function(event) {
+          if (shouldIgnoreClick()) {
+            event.stopPropagation();
+            return;
+          }
+          const touch = event.changedTouches && event.changedTouches[0];
+          if (touch && !finishPress(touch.clientX, touch.clientY)) {
+            event.stopPropagation();
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
+          suppressClickUntil = Date.now() + 350;
           send("NOTE_PRESS", { index });
         });
         svg.appendChild(hit);
@@ -609,6 +668,7 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
       function handlePoint(clientX, clientY) {
         const now = Date.now();
+        if (shouldIgnoreClick()) return;
         if (now - lastScoreTapSentAt < 180) return;
 
         const nearest = findNearestNoteToClientPoint(clientX, clientY);
@@ -619,12 +679,38 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       }
 
       score.addEventListener("click", function(event) {
+        if (shouldIgnoreClick()) return;
         handlePoint(event.clientX, event.clientY);
       });
+
+      score.addEventListener("mousedown", function(event) {
+        beginPress(event.clientX, event.clientY);
+      });
+
+      score.addEventListener("mousemove", function(event) {
+        updatePress(event.clientX, event.clientY);
+      });
+
+      score.addEventListener("mouseup", function(event) {
+        finishPress(event.clientX, event.clientY);
+      });
+
+      score.addEventListener("touchstart", function(event) {
+        const touch = event.touches && event.touches[0];
+        if (!touch) return;
+        beginPress(touch.clientX, touch.clientY);
+      }, { passive: true });
+
+      score.addEventListener("touchmove", function(event) {
+        const touch = event.touches && event.touches[0];
+        if (!touch) return;
+        updatePress(touch.clientX, touch.clientY);
+      }, { passive: true });
 
       score.addEventListener("touchend", function(event) {
         const touch = event.changedTouches && event.changedTouches[0];
         if (!touch) return;
+        if (!finishPress(touch.clientX, touch.clientY)) return;
         handlePoint(touch.clientX, touch.clientY);
       }, { passive: true });
     }

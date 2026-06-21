@@ -1,4 +1,4 @@
-import { db } from "./sqlite";
+﻿import { db, getPublicSongId, getScopedSongId, getScopedSongIdPrefix } from "./sqlite";
 
 export type SavedSong = {
   id: string;
@@ -9,9 +9,10 @@ export type SavedSong = {
 
 export function saveSong(input: { id: string; title: string; xmlContent: string }) {
   const now = new Date().toISOString();
+  const dbSongId = getScopedSongId(input.id);
   const existing = db.getFirstSync<{ id: string; created_at: string }>(
     "SELECT id, created_at FROM songs WHERE id = ?",
-    [input.id]
+    [dbSongId]
   );
 
   db.runSync(
@@ -25,7 +26,7 @@ export function saveSong(input: { id: string; title: string; xmlContent: string 
       dirty
     ) VALUES (?, ?, ?, ?, ?, 1)
     `,
-    [input.id, input.title, input.xmlContent, existing?.created_at ?? now, now]
+    [dbSongId, input.title, input.xmlContent, existing?.created_at ?? now, now]
   );
 }
 
@@ -39,11 +40,12 @@ export function getSavedSongs(): SavedSong[] {
     `
     SELECT id, title, xml_content, updated_at
     FROM songs
-    WHERE xml_content IS NOT NULL AND xml_content != ''
+    WHERE id LIKE ? AND xml_content IS NOT NULL AND xml_content != ''
     ORDER BY updated_at DESC
-    `
+    `,
+    [`${getScopedSongIdPrefix()}%`]
   ).map((song) => ({
-    id: song.id,
+    id: getPublicSongId(song.id),
     title: song.title,
     xmlContent: song.xml_content,
     updatedAt: song.updated_at,
@@ -63,13 +65,13 @@ export function getSavedSong(id: string): SavedSong | null {
     WHERE id = ?
     LIMIT 1
     `,
-    [id]
+    [getScopedSongId(id)]
   );
 
   if (!song) return null;
 
   return {
-    id: song.id,
+    id: getPublicSongId(song.id),
     title: song.title,
     xmlContent: song.xml_content,
     updatedAt: song.updated_at,
@@ -77,5 +79,5 @@ export function getSavedSong(id: string): SavedSong | null {
 }
 
 export function deleteSavedSong(id: string) {
-  db.runSync("DELETE FROM songs WHERE id = ?", [id]);
+  db.runSync("DELETE FROM songs WHERE id = ?", [getScopedSongId(id)]);
 }

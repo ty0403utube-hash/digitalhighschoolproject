@@ -36,7 +36,7 @@ import {
   SongPracticeSessionSummary,
   WeakPracticeSession,
 } from "./src/db/practiceRepository";
-import { initDb } from "./src/db/sqlite";
+import { initDb, setActiveDbUserId } from "./src/db/sqlite";
 import {
   deleteSavedSong,
   getSavedSong,
@@ -92,7 +92,7 @@ const FFT_JUDGMENT = {
 const DEFAULT_PRACTICE_BPM = 80;
 const FIREBASE_AUTH_ENABLED = true;
 const LOCAL_AUTH_USER = {
-  name: "연습자",
+  name: "������",
   email: "local@practice.app",
 };
 const ACCURACY_TEST_SONG_TITLE = "\uC815\uD655\uB3C4 \uD655\uC778 \uACE1";
@@ -100,12 +100,12 @@ const HARMONIC_CORRECTION_FACTORS = [1, 2, 3, 4];
 const GUITAR_SOUNDING_OCTAVE_OFFSET = -12;
 const USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT = true;
 const TUNER_STRINGS = [
-  { name: "1번줄 E", midi: 64 },
-  { name: "2번줄 B", midi: 59 },
-  { name: "3번줄 G", midi: 55 },
-  { name: "4번줄 D", midi: 50 },
-  { name: "5번줄 A", midi: 45 },
-  { name: "6번줄 E", midi: 40 },
+  { name: "1���� E", midi: 64 },
+  { name: "2���� B", midi: 59 },
+  { name: "3���� G", midi: 55 },
+  { name: "4���� D", midi: 50 },
+  { name: "5���� A", midi: 45 },
+  { name: "6���� E", midi: 40 },
 ];
 type NoteFeedback = {
   noteColor: string;
@@ -171,7 +171,7 @@ export default function App() {
   const [nativeMicLevel, setNativeMicLevel] = useState("--");
   const [analysisStatus, setAnalysisStatus] = useState("\uB9C8\uC774\uD06C \uB300\uAE30 \uC911");
   const [tunerActive, setTunerActive] = useState(false);
-  const [tunerStatus, setTunerStatus] = useState("마이크 대기 중");
+  const [tunerStatus, setTunerStatus] = useState("����ũ ��� ��");
   const [tunerHz, setTunerHz] = useState<number | null>(null);
   const [tunerClarity, setTunerClarity] = useState<number | null>(null);
   const [selectedTunerStringIndex, setSelectedTunerStringIndex] = useState(0);
@@ -209,6 +209,8 @@ export default function App() {
   const [rangeSelectionStartMeasure, setRangeSelectionStartMeasure] = useState<number | null>(null);
   const [isRangeSelectionReady, setIsRangeSelectionReady] = useState(false);
   const [rangeSelectionStartIndex, setRangeSelectionStartIndex] = useState<number | null>(null);
+  const [rangeSelectionEndIndex, setRangeSelectionEndIndex] = useState<number | null>(null);
+  const [rangeSelectionTarget, setRangeSelectionTarget] = useState<"start" | "end" | null>(null);
   const [customNoteRange, setCustomNoteRange] = useState<{ fromIndex: number; toIndex: number } | null>(null);
   const [customRangeStart, setCustomRangeStart] = useState("1");
   const [customRangeEnd, setCustomRangeEnd] = useState("1");
@@ -378,7 +380,7 @@ export default function App() {
         setCurrentUser(
           user
             ? {
-                name: user.displayName || user.email?.split("@")[0] || "사용자",
+                name: user.displayName || user.email?.split("@")[0] || "�����",
                 email: user.email || "",
               }
             : null
@@ -394,8 +396,15 @@ export default function App() {
   }, []);
   useEffect(() => {
     initDb();
-    refreshSavedSongs();
-    refreshPracticeInsights(songId);
+    if (currentUser) {
+      setActiveDbUserId(currentUser.email);
+      refreshSavedSongs();
+      refreshPracticeInsights(songId);
+    } else {
+      setSavedSongs([]);
+      setAchievementSummaries([]);
+      setAchievementSessions([]);
+    }
     return () => {
       stopRenderTimeout();
       stopCountdown();
@@ -403,7 +412,7 @@ export default function App() {
       stopNativeMeterFallback();
       stopPitchWatchdog();
     };
-  }, [songId]);
+  }, [songId, currentUser?.email]);
   useEffect(() => {
     if (activeSection !== "play" && activeSection !== "weakScore") {
       stopRenderTimeout();
@@ -439,6 +448,11 @@ export default function App() {
     setFocusPracticeRange(null);
     setFocusPracticeMeasure(null);
     setCustomNoteRange(null);
+    setRangeSelectionStartMeasure(null);
+    setRangeSelectionStartIndex(null);
+    setRangeSelectionEndIndex(null);
+    setRangeSelectionTarget(null);
+    setIsRangeSelectionReady(false);
     setCustomRangeStart("1");
     setCustomRangeEnd("1");
   }, [musicXml]);
@@ -530,21 +544,21 @@ export default function App() {
   }
   async function submitLogin() {
     if (!FIREBASE_AUTH_ENABLED) {
-      const message = "현재 로그인 기능은 임시로 비활성화되어 있습니다.";
+      const message = "���� �α��� ����� �ӽ÷� ��Ȱ��ȭ�Ǿ� �ֽ��ϴ�.";
       setAuthError(message);
-      Alert.alert("로그인 비활성화", message);
+      Alert.alert("�α��� ��Ȱ��ȭ", message);
       return;
     }
 
     const name = loginName.trim();
     if (!name) {
-      setAuthError("이름을 입력해주세요.");
-      Alert.alert("로그인 오류", "이름을 입력해주세요.");
+      setAuthError("�̸��� �Է����ּ���.");
+      Alert.alert("�α��� ����", "�̸��� �Է����ּ���.");
       return;
     }
     if (loginPassword.trim().length < 6) {
-      setAuthError("비밀번호는 6자 이상 입력해주세요.");
-      Alert.alert("로그인 오류", "비밀번호는 6자 이상 입력해주세요.");
+      setAuthError("��й�ȣ�� 6�� �̻� �Է����ּ���.");
+      Alert.alert("�α��� ����", "��й�ȣ�� 6�� �̻� �Է����ּ���.");
       return;
     }
     const email = createFirebaseEmailFromName(name);
@@ -559,7 +573,7 @@ export default function App() {
     } catch (error) {
       const message = getFirebaseAuthErrorMessage(error);
       setAuthError(message);
-      Alert.alert("로그인 오류", message);
+      Alert.alert("�α��� ����", message);
     }
   }
   async function logout() {
@@ -569,7 +583,7 @@ export default function App() {
       setCurrentUser(LOCAL_AUTH_USER);
       setActiveSection("home");
       setSelectedAchievementSongId(null);
-      Alert.alert("로그인 비활성화", "현재는 로컬 연습 모드로 실행 중입니다.");
+      Alert.alert("�α��� ��Ȱ��ȭ", "����� ���� ���� ���� ���� ���Դϴ�.");
       return;
     }
 
@@ -580,7 +594,7 @@ export default function App() {
     } catch (error) {
       const message = getFirebaseAuthErrorMessage(error);
       setAuthError(message);
-      Alert.alert("로그아웃 오류", message);
+      Alert.alert("�α׾ƿ� ����", message);
     }
   }
   function getFirebaseAuthErrorMessage(error: unknown) {
@@ -592,18 +606,18 @@ export default function App() {
       return getFirebaseConfigErrorMessage(error);
     }
     if (message.includes("auth/configuration-not-found")) {
-      return "Firebase Auth 설정이 아직 완료되지 않았습니다. Firebase Console에서 이메일/비밀번호 로그인을 켜고 환경변수를 확인해주세요.";
+      return "Firebase Auth ������ ���� �Ϸ���� �ʾҽ��ϴ�. Firebase Console���� �̸���/��й�ȣ �α����� �Ѱ� ȯ�溯���� Ȯ�����ּ���.";
     }
     if (message.includes("auth/invalid-api-key") || message.includes("apiKey")) {
-      return "Firebase API 키가 비어 있거나 올바르지 않습니다. .env의 EXPO_PUBLIC_FIREBASE_API_KEY 값을 확인해주세요.";
+      return "Firebase API Ű�� ��� �ְų� �ùٸ��� �ʽ��ϴ�. .env�� EXPO_PUBLIC_FIREBASE_API_KEY ���� Ȯ�����ּ���.";
     }
-    if (message.includes("auth/email-already-in-use")) return "이미 가입된 이름입니다.";
+    if (message.includes("auth/email-already-in-use")) return "�̹� ���Ե� �̸��Դϴ�.";
     if (message.includes("auth/invalid-credential") || message.includes("auth/wrong-password")) {
-      return "이름 또는 비밀번호가 올바르지 않습니다.";
+      return "�̸� �Ǵ� ��й�ȣ�� �ùٸ��� �ʽ��ϴ�.";
     }
-    if (message.includes("auth/user-not-found")) return "가입되지 않은 이름입니다.";
-    if (message.includes("auth/weak-password")) return "비밀번호가 너무 약합니다. 6자 이상으로 입력해주세요.";
-    if (message.includes("auth/invalid-email")) return "이메일 형식이 올바르지 않습니다.";
+    if (message.includes("auth/user-not-found")) return "���Ե��� ���� �̸��Դϴ�.";
+    if (message.includes("auth/weak-password")) return "��й�ȣ�� �ʹ� ���մϴ�. 6�� �̻����� �Է����ּ���.";
+    if (message.includes("auth/invalid-email")) return "�̸��� ������ �ùٸ��� �ʽ��ϴ�.";
     return message;
   }
   function createFirebaseEmailFromName(name: string) {
@@ -723,7 +737,7 @@ export default function App() {
 
     Alert.alert(
       "\uAD6C\uAC04 \uCD08\uAE30\uD654",
-      `${formatFocusRange(range)}의 저장된 실수 기록만 지울까요?`,
+      `${formatFocusRange(range)}�� ����� �Ǽ� ��ϸ� ������?`,
       [
         { text: "\uCDE8\uC18C", style: "cancel" },
         {
@@ -778,6 +792,8 @@ export default function App() {
     setRangeSelectionStartMeasure(null);
     setIsRangeSelectionReady(false);
     setRangeSelectionStartIndex(null);
+    setRangeSelectionEndIndex(null);
+    setRangeSelectionTarget(null);
     setCustomNoteRange(null);
     stopCountdown();
     stopNoteTimer();
@@ -831,7 +847,7 @@ export default function App() {
       await recorder.prepareToRecordAsync();
       recorder.record();
       nativeRecorderRef.current = recorder;
-      setAnalysisStatus("Native mic fallback");
+      setAnalysisStatus("마이크 보조 감지 중");
       nativeMeterTimerRef.current = setInterval(() => {
         const status = recorder.getStatus();
         const metering = status.metering;
@@ -841,7 +857,7 @@ export default function App() {
         }
         setNativeMicLevel(`${metering.toFixed(1)} dB`);
         if (isListeningRef.current && metering > -45) {
-          setAnalysisStatus("Native mic hears sound");
+          setAnalysisStatus("소리 감지 중");
         }
       }, 100);
     } catch (error) {
@@ -891,7 +907,8 @@ export default function App() {
     await requestNativeMicrophonePermission();
     stopCountdown();
     stopNoteTimer();
-    const startIndex = mode === "resume" ? currentIndexRef.current : getPracticeStartIndex();
+    const rawStartIndex = mode === "resume" ? currentIndexRef.current : getPracticeStartIndex();
+    const startIndex = findNextPracticeEventIndexFrom(rawStartIndex);
     practiceBpmRef.current = clampPracticeBpm(practiceBpm);
     currentIndexRef.current = startIndex;
     setCurrentIndex(startIndex);
@@ -1115,7 +1132,7 @@ export default function App() {
       );
       setAnalysisStatus(`${formatNoteName(bestSample.match.note)} 감지`);
       setDiagnosticStatus(
-        `어택 OK / ${bestSample.sample.elapsedMs}ms / ${Math.round(bestSample.match.result.cents)} cents / ${Math.round(matchRatio * 100)}%`
+        `���� OK / ${bestSample.sample.elapsedMs}ms / ${Math.round(bestSample.match.result.cents)} cents / ${Math.round(matchRatio * 100)}%`
       );
       setMatchedEventFeedback(activeNote, "OK");
     }
@@ -1137,7 +1154,7 @@ export default function App() {
     await startPerformanceRecording();
     scoreRef.current?.resetScore();
     setScoreViewVersion((version) => version + 1);
-    setResultSummary("도돌이표 이후 새 연습 중");
+    setResultSummary("������ǥ ���� �� ���� ��");
   }
   function scheduleNextPracticeNote(delayMs: number) {
     setTimeout(() => {
@@ -1158,12 +1175,14 @@ export default function App() {
     currentIndexRef.current = nextIndex;
     setCurrentIndex(nextIndex);
     setCanResumeFromMistake(false);
-    setAnalysisStatus(crossedRepeat ? "도돌이표 이후 새 악보" : status);
+    setAnalysisStatus(crossedRepeat ? "������ǥ ���� �� �Ǻ�" : status);
     scheduleNextPracticeNote(crossedRepeat ? 450 : 0);
   }
   function getEventDurationMs(note: NonNullable<typeof currentNote>) {
     const groupNotes = getNotesAtSameStart(note);
-    return Math.min(...groupNotes.map((groupNote) => getNoteDurationForPractice(groupNote)));
+    const timingNotes = groupNotes.filter((groupNote) => !groupNote.skipPractice);
+    const durationNotes = timingNotes.length ? timingNotes : groupNotes;
+    return Math.min(...durationNotes.map((groupNote) => getNoteDurationForPractice(groupNote)));
   }
   function findNextEventIndex(note: NonNullable<typeof currentNote>) {
     return notes.findIndex(
@@ -1186,7 +1205,8 @@ export default function App() {
     return `${note.measure}:${Math.round(note.startMs)}`;
   }
   function markPracticeEventAttempted(note: NonNullable<typeof currentNote>) {
-    if (getNotesAtSameStart(note).every((groupNote) => groupNote.isRest)) return;
+    const judgmentNotes = getJudgmentNotesAtSameStart(note);
+    if (judgmentNotes.every((groupNote) => groupNote.isRest || groupNote.skipPractice)) return;
     sessionAttemptedEventKeysRef.current.add(getPracticeEventKey(note));
   }
   function finishCurrentEvent(matched: boolean) {
@@ -1208,8 +1228,9 @@ export default function App() {
       }
       setDiagnosticStatus(diagnostic);
       const bestPitch = currentNoteBestPitchRef.current;
+      const mistakeNote = groupNotes.find((groupNote) => !groupNote.skipPractice) ?? groupNotes[0] ?? note;
       recordMistake(
-        groupNotes[0] ?? note,
+        mistakeNote,
         bestPitch ? "wrong_pitch" : "timeout",
         bestPitch ? Math.round(hzToMidi(bestPitch.hz)) : null
       );
@@ -1267,11 +1288,11 @@ export default function App() {
     const reading = getTunerReading(payload.hz, selectedTunerString);
     const absCents = Math.abs(reading.cents);
     if (absCents <= 8) {
-      setTunerStatus("정확합니다");
+      setTunerStatus("��Ȯ�մϴ�");
     } else if (reading.cents < 0) {
-      setTunerStatus("낮습니다. 줄을 조이세요");
+      setTunerStatus("�����ϴ�. ���� ���̼���");
     } else {
-      setTunerStatus("높습니다. 줄을 푸세요");
+      setTunerStatus("����ϴ�. ���� Ǫ����");
     }
   }
   function getTunerReading(hz: number, stringInfo = selectedTunerString) {
@@ -1286,14 +1307,14 @@ export default function App() {
     };
   }
   async function startTuner() {
-    setTunerStatus("마이크 시작 중...");
+    setTunerStatus("����ũ ���� ��...");
     setTunerActive(true);
     await requestNativeMicrophonePermission();
     scoreRef.current?.startMic();
   }
   function stopTuner() {
     setTunerActive(false);
-    setTunerStatus("마이크 대기 중");
+    setTunerStatus("����ũ ��� ��");
   }
   function handleFftPitchClasses(payload: {
     pitchClasses: number[];
@@ -1312,7 +1333,7 @@ export default function App() {
     }
     const elapsedMs = Date.now() - noteStartedAtRef.current;
     if (!noteAttackSeenRef.current && elapsedMs > ATTACK_JUDGMENT.guitarAttackRequiredAfterMs) {
-      setDiagnosticStatus(`지속음 제외 / ${elapsedMs}ms / 기타 어택 없음`);
+      setDiagnosticStatus(`������ ���� / ${elapsedMs}ms / ��Ÿ ���� ����`);
       return;
     }
     const matchedCandidate = candidateNotes.find((note) => {
@@ -1356,8 +1377,8 @@ export default function App() {
     );
     if (result.matched) {
       if (!isLikelyGuitarAttackForCurrentNote(payload, elapsedMs)) {
-        setAnalysisStatus("기타 어택 대기 중");
-        setDiagnosticStatus(`지속음 제외 / ${elapsedMs}ms / 기타 어택 없음`);
+        setAnalysisStatus("��Ÿ ���� ��� ��");
+        setDiagnosticStatus(`������ ���� / ${elapsedMs}ms / ��Ÿ ���� ����`);
         return;
       }
       setAnalysisStatus(`${formatNoteName(closestMatch.note)} 감지`);
@@ -1546,7 +1567,7 @@ export default function App() {
   }
   function getNotesAtSameStart(note: NonNullable<typeof currentNote>) {
     const sameStartNotes = notes.filter(
-      (candidate) => !candidate.skipPractice && Math.abs(candidate.startMs - note.startMs) <= SAME_START_MS
+      (candidate) => Math.abs(candidate.startMs - note.startMs) <= SAME_START_MS
     );
     if (note.isRest) {
       return sameStartNotes.filter((candidate) => candidate.isRest);
@@ -1555,7 +1576,9 @@ export default function App() {
     return playableNotes.length ? playableNotes : sameStartNotes;
   }
   function getJudgmentNotesAtSameStart(note: NonNullable<typeof currentNote>) {
-    const playableNotes = getNotesAtSameStart(note).filter((candidate) => !candidate.isRest);
+    const playableNotes = getNotesAtSameStart(note).filter(
+      (candidate) => !candidate.isRest && !candidate.skipPractice
+    );
     if (!playableNotes.length) return getNotesAtSameStart(note);
     if (!USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT || playableNotes.length === 1) return playableNotes;
     return [
@@ -1605,16 +1628,16 @@ export default function App() {
     return "\uC9D1\uC911 \uD544\uC694";
   }
   function formatAchievementListMeta(summary: SongAchievementSummary) {
-    return `\uCD5C\uADFC ${formatAchievementAccuracy(summary)} · 90% \uC774\uC0C1 ${Math.min(
+    return `\uCD5C\uADFC ${formatAchievementAccuracy(summary)} �� 90% \uC774\uC0C1 ${Math.min(
       summary.highAccuracyStreak,
       3
-    )}/3 · \uC5F0\uC2B5 ${summary.sessionCount}\uD68C`;
+    )}/3 �� \uC5F0\uC2B5 ${summary.sessionCount}\uD68C`;
   }
   function formatRecentMonthAccuracy(summary: SongAchievementSummary) {
     return summary.recentMonthAccuracy === null ? "-" : `${summary.recentMonthAccuracy}%`;
   }
   function formatRecentMonthMeta(summary: SongAchievementSummary) {
-    return `\uCD5C\uADFC \uD55C \uB2EC ${formatRecentMonthAccuracy(summary)} · \uC5F0\uC2B5 ${summary.recentMonthSessionCount}\uD68C`;
+    return `\uCD5C\uADFC \uD55C \uB2EC ${formatRecentMonthAccuracy(summary)} �� \uC5F0\uC2B5 ${summary.recentMonthSessionCount}\uD68C`;
   }
   function getAccuracyBarWidth(summary: SongAchievementSummary): DimensionValue {
     return `${Math.max(0, Math.min(100, summary.latestAccuracy ?? 0))}%`;
@@ -1957,6 +1980,8 @@ export default function App() {
     setRangeSelectionStartMeasure(null);
     setIsRangeSelectionReady(false);
     setRangeSelectionStartIndex(null);
+    setRangeSelectionEndIndex(null);
+    setRangeSelectionTarget(null);
     setCustomNoteRange(null);
     setPendingFocusMeasure(null);
     setWeakScoreRange({ from: 1, to: measureCount });
@@ -1966,37 +1991,47 @@ export default function App() {
   }
   function handleScoreNotePress(payload: { index: number }) {
     if (!isRangeSelectionMode) return;
-    const pressedNote = notes.find((note) => note.index === payload.index);
-    if (!pressedNote) return;
-    const measure = pressedNote.measure;
-
-    if (rangeSelectionStartMeasure === null) {
-      scoreRef.current?.resetScore();
-      setRangeSelectionStartMeasure(measure);
-      setRangeSelectionStartIndex(payload.index);
-      setIsRangeSelectionReady(false);
-      setCustomRangeStart(String(measure));
-      setCustomRangeEnd(String(measure));
-      setAnalysisStatus(`${formatNoteName(pressedNote)} 시작 선택됨. 끝 음표를 악보에서 한 번 더 누르세요.`);
-      markSelectedNoteRangePreview(payload.index, payload.index);
-      scoreRef.current?.setNoteColor(payload.index, "#ef8a24");
-      scoreRef.current?.setNoteLabel(payload.index, "시작", "#ef8a24");
+    if (!rangeSelectionTarget) {
+      setAnalysisStatus("���� ���� �Ǵ� �� ������ ���� ��������.");
       return;
     }
+    const pressedNote = notes.find((note) => note.index === payload.index);
+    if (!pressedNote) return;
+    if (rangeSelectionTarget === "end" && rangeSelectionStartIndex !== null && payload.index < rangeSelectionStartIndex) {
+      setAnalysisStatus("�� ��ǥ�� ���� ��ǥ���� �ڿ� �־�� �մϴ�.");
+      return;
+    }
+    if (rangeSelectionTarget === "start") {
+      setRangeSelectionStartMeasure(pressedNote.measure);
+      setRangeSelectionStartIndex(payload.index);
+      setCustomRangeStart(String(payload.index));
+    } else {
+      setRangeSelectionEndIndex(payload.index);
+      setCustomRangeEnd(String(payload.index));
+    }
 
-    const startIndex = rangeSelectionStartIndex ?? payload.index;
-    const fromIndex = Math.min(startIndex, payload.index);
-    const toIndex = Math.max(startIndex, payload.index);
-    const fromMeasure = notes.find((note) => note.index === fromIndex)?.measure ?? measure;
-    const toMeasure = notes.find((note) => note.index === toIndex)?.measure ?? measure;
-    setCustomRangeStart(String(fromIndex));
-    setCustomRangeEnd(String(toIndex));
-    setCustomNoteRange({ fromIndex, toIndex });
-    setRangeSelectionStartMeasure(null);
-    setRangeSelectionStartIndex(null);
-    setIsRangeSelectionReady(true);
-    setAnalysisStatus(`${fromMeasure}마디 ${fromIndex}번 음표부터 ${toMeasure}마디 ${toIndex}번 음표까지 선택됨`);
-    setTimeout(() => markSelectedNoteRangePreview(fromIndex, toIndex), 80);
+    const nextStartIndex = rangeSelectionTarget === "start" ? payload.index : rangeSelectionStartIndex;
+    const nextEndIndex = rangeSelectionTarget === "end" ? payload.index : rangeSelectionEndIndex;
+
+    if (nextStartIndex !== null && nextEndIndex !== null) {
+      const fromIndex = nextStartIndex;
+      const toIndex = nextEndIndex;
+      const fromMeasure = notes.find((note) => note.index === fromIndex)?.measure ?? pressedNote.measure;
+      const toMeasure = notes.find((note) => note.index === toIndex)?.measure ?? pressedNote.measure;
+      setCustomNoteRange({ fromIndex, toIndex });
+      setIsRangeSelectionReady(true);
+      setAnalysisStatus(`${fromMeasure}���� ${fromIndex}�� ��ǥ���� ${toMeasure}���� ${toIndex}�� ��ǥ���� ���õ�`);
+    } else {
+      setCustomNoteRange(null);
+      setIsRangeSelectionReady(false);
+      setAnalysisStatus(
+        rangeSelectionTarget === "start"
+          ? `${formatNoteName(pressedNote)} ���� ���õ�. �� ������ ���� �� �� ��ǥ�� �������.`
+          : `${formatNoteName(pressedNote)} �� ���õ�. ���� ������ ���� �� ���� ��ǥ�� �������.`
+      );
+    }
+
+    setTimeout(() => markRangeSelectionPreview(nextStartIndex, nextEndIndex), 80);
   }
   function practiceWeakRange(range: FocusRange) {
     const firstIndex = findFirstNoteIndexForMeasureRange(range.fromMeasure, range.toMeasure);
@@ -2048,6 +2083,8 @@ export default function App() {
       setIsRangeSelectionMode(false);
       setRangeSelectionStartMeasure(null);
       setRangeSelectionStartIndex(null);
+      setRangeSelectionEndIndex(null);
+      setRangeSelectionTarget(null);
       setIsRangeSelectionReady(false);
       setScoreViewVersion((version) => version + 1);
       currentIndexRef.current = customNoteRange.fromIndex;
@@ -2056,7 +2093,7 @@ export default function App() {
       setPlayReturnSection("focus");
       setActiveSection("play");
       setAnalysisStatus(
-        `구간 연습: ${firstNote.measure}마디 ${customNoteRange.fromIndex}번 음표-${lastNote.measure}마디 ${customNoteRange.toIndex}번 음표`
+        `���� ����: ${firstNote.measure}���� ${customNoteRange.fromIndex}�� ��ǥ-${lastNote.measure}���� ${customNoteRange.toIndex}�� ��ǥ`
       );
       return;
     }
@@ -2084,6 +2121,8 @@ export default function App() {
     setIsRangeSelectionMode(false);
     setRangeSelectionStartMeasure(null);
     setRangeSelectionStartIndex(null);
+    setRangeSelectionEndIndex(null);
+    setRangeSelectionTarget(null);
     setIsRangeSelectionReady(false);
     setCustomNoteRange(null);
     setScoreViewVersion((version) => version + 1);
@@ -2139,6 +2178,8 @@ export default function App() {
     setIsRangeSelectionMode(false);
     setRangeSelectionStartMeasure(null);
     setRangeSelectionStartIndex(null);
+    setRangeSelectionEndIndex(null);
+    setRangeSelectionTarget(null);
     setIsRangeSelectionReady(false);
     setActiveSection("focus");
   }
@@ -2168,10 +2209,23 @@ export default function App() {
       scoreRef.current?.setNoteColor(note.index, "#e53935");
     }
   }
-  function markSelectedRangePreview(from: number, to: number) {
-    for (const note of notes) {
-      if (note.measure < from || note.measure > to) continue;
-      scoreRef.current?.setNoteColor(note.index, "#f7c982");
+  function markRangeSelectionPreview(startIndex: number | null, endIndex: number | null) {
+    scoreRef.current?.resetScore();
+    if (startIndex !== null && endIndex !== null) {
+      const from = Math.min(startIndex, endIndex);
+      const to = Math.max(startIndex, endIndex);
+      for (const note of notes) {
+        if (note.index < from || note.index > to) continue;
+        scoreRef.current?.setNoteColor(note.index, "#f7c982");
+      }
+    }
+    if (startIndex !== null) {
+      scoreRef.current?.setNoteColor(startIndex, "#ef8a24");
+      scoreRef.current?.setNoteLabel(startIndex, "����", "#ef8a24");
+    }
+    if (endIndex !== null) {
+      scoreRef.current?.setNoteColor(endIndex, "#ef8a24");
+      scoreRef.current?.setNoteLabel(endIndex, "��", "#ef8a24");
     }
   }
   function markSelectedNoteRangePreview(fromIndex: number, toIndex: number) {
@@ -2182,9 +2236,9 @@ export default function App() {
       scoreRef.current?.setNoteColor(note.index, "#f7c982");
     }
     scoreRef.current?.setNoteColor(from, "#ef8a24");
-    scoreRef.current?.setNoteLabel(from, "시작", "#ef8a24");
+    scoreRef.current?.setNoteLabel(from, "����", "#ef8a24");
     scoreRef.current?.setNoteColor(to, "#ef8a24");
-    scoreRef.current?.setNoteLabel(to, "끝", "#ef8a24");
+    scoreRef.current?.setNoteLabel(to, "��", "#ef8a24");
   }
   function applyManualScoreTitle() {
     const nextTitle = sanitizeScoreTitle(editableScoreTitle) || "Imported Score";
@@ -2277,7 +2331,7 @@ export default function App() {
   }
   function isProbablyGarbledTitle(title: string) {
     const questionMarks = (title.match(/\?/g) ?? []).length;
-    const suspiciousChars = (title.match(/[熬곭솾?η넭?곕쳜?좑옙]/g) ?? []).length;
+    const suspiciousChars = (title.match(/[袁癲?�熬?�뫂?��]/g) ?? []).length;
     return (
       title.includes("\uFFFD") ||
       /\?{3,}/.test(title) ||
@@ -2289,8 +2343,8 @@ export default function App() {
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.loginScreen}>
-          <Text style={styles.loginTitle}>{"기타 연습"}</Text>
-          <Text style={styles.loginSubtitle}>{"로그인 정보를 확인하는 중입니다"}</Text>
+          <Text style={styles.loginTitle}>{"��Ÿ ����"}</Text>
+          <Text style={styles.loginSubtitle}>{"�α��� ������ Ȯ���ϴ� ���Դϴ�"}</Text>
         </View>
       </SafeAreaView>
     );
@@ -2312,11 +2366,11 @@ export default function App() {
             scrollEnabled
           >
             <View style={styles.loginCard}>
-              <Text style={styles.loginTitle}>{"기타 연습"}</Text>
+              <Text style={styles.loginTitle}>{"��Ÿ ����"}</Text>
               <Text style={styles.loginSubtitle}>
                 {loginMode === "login"
-                  ? "이름과 비밀번호로 로그인하고 연습 기록을 이어서 확인하세요"
-                  : "이름과 비밀번호로 계정을 만들고 연습 기록을 관리하세요"}
+                  ? "�̸��� ��й�ȣ�� �α����ϰ� ���� ����� �̾ Ȯ���ϼ���"
+                  : "�̸��� ��й�ȣ�� ������ ����� ���� ����� �����ϼ���"}
               </Text>
               {authError ? <Text style={styles.loginError}>{authError}</Text> : null}
               <View style={styles.loginModeRow}>
@@ -2330,7 +2384,7 @@ export default function App() {
                       loginMode === "login" && styles.activeLoginModeButtonText,
                     ]}
                   >
-                    {"로그인"}
+                    {"�α���"}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -2343,7 +2397,7 @@ export default function App() {
                       loginMode === "signup" && styles.activeLoginModeButtonText,
                     ]}
                   >
-                    {"회원가입"}
+                    {"ȸ������"}
                   </Text>
                 </Pressable>
               </View>
@@ -2351,7 +2405,7 @@ export default function App() {
                 style={styles.loginInput}
                 value={loginName}
                 onChangeText={setLoginName}
-                placeholder="이름"
+                placeholder="�̸�"
                 placeholderTextColor="#8a938d"
                 autoCorrect={false}
                 returnKeyType="next"
@@ -2360,7 +2414,7 @@ export default function App() {
                 style={styles.loginInput}
                 value={loginPassword}
                 onChangeText={setLoginPassword}
-                placeholder="비밀번호"
+                placeholder="��й�ȣ"
                 placeholderTextColor="#8a938d"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -2371,11 +2425,11 @@ export default function App() {
               />
               <Pressable style={styles.loginSubmitButton} onPress={submitLogin}>
                 <Text style={styles.loginSubmitButtonText}>
-                  {loginMode === "login" ? "로그인하기" : "회원가입하기"}
+                  {loginMode === "login" ? "�α����ϱ�" : "ȸ�������ϱ�"}
                 </Text>
               </Pressable>
               <Text style={styles.loginNote}>
-                {"Firebase에는 이름을 바탕으로 만든 내부 계정으로 안전하게 로그인합니다."}
+                {"Firebase���� �̸��� �������� ���� ���� �������� �����ϰ� �α����մϴ�."}
               </Text>
             </View>
           </ScrollView>
@@ -2392,11 +2446,11 @@ export default function App() {
               <View style={styles.homeHeaderTextBlock}>
                 <Text style={styles.homeTitle}>{"\uAE30\uD0C0 \uC5F0\uC2B5"}</Text>
                 <Text style={styles.homeSubtitle}>
-                  {currentUser.name}{"님, 오늘 연습을 시작해볼까요?"}
+                  {currentUser.name}{"��, ���� ������ �����غ����?"}
                 </Text>
               </View>
               <Pressable style={styles.logoutButton} onPress={logout}>
-                <Text style={styles.logoutButtonText}>{"로그아웃"}</Text>
+                <Text style={styles.logoutButtonText}>{"�α׾ƿ�"}</Text>
               </Pressable>
             </View>
           </View>
@@ -2406,8 +2460,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>1</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"연주하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"저장된 악보를 선택하고 연습합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"�����ϱ�"}</Text>
+                <Text style={styles.categorySubtitle}>{"����� �Ǻ��� �����ϰ� �����մϴ�"}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("focus")}>
@@ -2415,8 +2469,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>2</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"취약 부분 연습하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"자주 틀린 구간을 다시 연습합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"��� �κ� �����ϱ�"}</Text>
+                <Text style={styles.categorySubtitle}>{"���� Ʋ�� ������ �ٽ� �����մϴ�"}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("achievement")}>
@@ -2424,8 +2478,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>3</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"성취도 확인하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"현재 진행 중인 곡과 완료한 곡을 확인합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"���뵵 Ȯ���ϱ�"}</Text>
+                <Text style={styles.categorySubtitle}>{"���� ���� ���� ��� �Ϸ��� ���� Ȯ���մϴ�"}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("tuner")}>
@@ -2433,8 +2487,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>4</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"튜닝하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"기타 6현 표준 튜닝에 맞춰 줄을 조율합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"Ʃ���ϱ�"}</Text>
+                <Text style={styles.categorySubtitle}>{"��Ÿ 6�� ǥ�� Ʃ�׿� ���� ���� �����մϴ�"}</Text>
               </View>
             </Pressable>
           </View>
@@ -2456,7 +2510,7 @@ export default function App() {
             </Text>
           </View>
           <Pressable style={styles.importButton} onPress={importMusicXml}>
-            <Text style={styles.importButtonText}>{"불러오기"}</Text>
+            <Text style={styles.importButtonText}>{"�ҷ�����"}</Text>
           </Pressable>
         </View>
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
@@ -2500,11 +2554,11 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={returnFromTuner}>
-            <Text style={styles.backButtonText}>{"홈"}</Text>
+            <Text style={styles.backButtonText}>{"Ȩ"}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>{"튜닝하기"}</Text>
-            <Text style={styles.subtitle}>{"표준 튜닝 E A D G B E"}</Text>
+            <Text style={styles.title}>{"Ʃ���ϱ�"}</Text>
+            <Text style={styles.subtitle}>{"ǥ�� Ʃ�� E A D G B E"}</Text>
           </View>
         </View>
         <View style={styles.tunerHiddenScore}>
@@ -2522,16 +2576,16 @@ export default function App() {
             onScoreError={(message) => setTunerStatus(message)}
             onNoteMapWarning={() => {}}
             onScrollInfo={() => {}}
-            onMicReady={() => setTunerStatus("줄을 하나씩 튕겨주세요")}
-            onMicUnavailable={(message) => setTunerStatus(`마이크 사용 불가: ${message}`)}
+            onMicReady={() => setTunerStatus("���� �ϳ��� ƨ���ּ���")}
+            onMicUnavailable={(message) => setTunerStatus(`����ũ ��� �Ұ�: ${message}`)}
           />
           {countdown || micStarting ? (
             <View style={styles.recordingCountdownBadge}>
               <Text style={styles.recordingCountdownText}>
-                {countdown ? `${countdown}` : "준비"}
+                {countdown ? `${countdown}` : "�غ�"}
               </Text>
               <Text style={styles.recordingCountdownLabel}>
-                {countdown ? "녹음 시작" : "마이크 확인"}
+                {countdown ? "���� ����" : "����ũ Ȯ��"}
               </Text>
             </View>
           ) : null}
@@ -2548,14 +2602,14 @@ export default function App() {
                     setSelectedTunerStringIndex(index);
                     setTunerHz(null);
                     setTunerClarity(null);
-                    setTunerStatus(`${stringInfo.name} 기준으로 맞춰주세요`);
+                    setTunerStatus(`${stringInfo.name} �������� �����ּ���`);
                   }}
                 >
                   <Text style={[styles.tunerTabNumber, isSelected && styles.tunerTabNumberActive]}>
                     {index + 1}
                   </Text>
                   <Text style={[styles.tunerTabText, isSelected && styles.tunerTabTextActive]}>
-                    {stringInfo.name.replace(`${index + 1}번줄 `, "")}
+                    {stringInfo.name.replace(`${index + 1}���� `, "")}
                   </Text>
                 </Pressable>
               );
@@ -2563,10 +2617,10 @@ export default function App() {
           </View>
           <Text style={styles.tunerString}>{selectedTunerString.name}</Text>
           <Text style={styles.tunerTargetHz}>
-            {"목표 "}{midiToHz(selectedTunerString.midi).toFixed(1)}{" Hz"}
+            {"��ǥ "}{midiToHz(selectedTunerString.midi).toFixed(1)}{" Hz"}
           </Text>
           <Text style={styles.tunerHz}>
-            {tunerHz ? `${tunerHz.toFixed(1)} Hz` : "소리를 기다리는 중"}
+            {tunerHz ? `${tunerHz.toFixed(1)} Hz` : "�Ҹ��� ��ٸ��� ��"}
           </Text>
           <Text style={styles.tunerStatus}>{tunerStatus}</Text>
           <View style={styles.tunerMeter}>
@@ -2574,9 +2628,9 @@ export default function App() {
             <View style={[styles.tunerNeedle, { left: needleLeft }]} />
           </View>
           <View style={styles.tunerMeterLabels}>
-            <Text style={styles.tunerMeterLabel}>{"낮음"}</Text>
-            <Text style={styles.tunerMeterLabel}>{"정확"}</Text>
-            <Text style={styles.tunerMeterLabel}>{"높음"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"����"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"��Ȯ"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"����"}</Text>
           </View>
           <Text style={styles.tunerCents}>
             {tunerReading ? `${cents > 0 ? "+" : ""}${cents} cents` : "0 cents"}
@@ -2586,10 +2640,10 @@ export default function App() {
             disabled={tunerActive}
             onPress={startTuner}
           >
-            <Text style={styles.tunerStartButtonText}>{tunerActive ? "듣는 중" : "튜닝 시작"}</Text>
+            <Text style={styles.tunerStartButtonText}>{tunerActive ? "��� ��" : "Ʃ�� ����"}</Text>
           </Pressable>
           <Text style={styles.tunerStringItem}>
-            {"탭에서 줄을 고른 뒤 해당 줄만 튕겨서 맞추세요."}
+            {"�ǿ��� ���� ��� �� �ش� �ٸ� ƨ�ܼ� ���߼���."}
           </Text>
         </View>
       </SafeAreaView>
@@ -2600,12 +2654,12 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={returnFromFocus}>
-            <Text style={styles.backButtonText}>{focusSelectedSongId ? "목록" : "홈"}</Text>
+            <Text style={styles.backButtonText}>{focusSelectedSongId ? "���" : "Ȩ"}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
             <Text style={styles.title}>{"\uCDE8\uC57D \uBD80\uBD84 \uC5F0\uC2B5\uD558\uAE30"}</Text>
             <Text style={styles.subtitle}>
-              {focusSelectedSongId ? songTitle : "먼저 연습할 곡을 선택하세요"}
+              {focusSelectedSongId ? songTitle : "���� ������ ���� �����ϼ���"}
             </Text>
           </View>
         </View>
@@ -2613,9 +2667,9 @@ export default function App() {
           {!focusSelectedSongId ? (
             <>
               <View style={styles.focusIntroHeader}>
-                <Text style={styles.placeholderTitle}>{"곡 선택"}</Text>
+                <Text style={styles.placeholderTitle}>{"�� ����"}</Text>
                 <Text style={styles.sectionHeaderSubtitle}>
-                  {"곡을 선택하면 그 곡의 반복 연습 필요 구간만 따로 보여줍니다."}
+                  {"���� �����ϸ� �� ���� �ݺ� ���� �ʿ� ������ ���� �����ݴϴ�."}
                 </Text>
               </View>
               {focusSelectableSongs.length ? (
@@ -2648,7 +2702,7 @@ export default function App() {
                 <View style={styles.focusActionTextBlock}>
                   <Text style={styles.placeholderTitle}>{songTitle}</Text>
                   <Text style={styles.sectionHeaderSubtitle}>
-                    {"최근 연습에서 한 마디의 30% 이상을 틀리거나, 마디 경계의 절반+절반 가상 구간에서 30% 이상 틀리면 표시됩니다."}
+                    {"�ֱ� �������� �� ������ 30% �̻��� Ʋ���ų�, ���� ����� ����+���� ���� �������� 30% �̻� Ʋ���� ǥ�õ˴ϴ�."}
                   </Text>
                 </View>
               </View>
@@ -2661,10 +2715,10 @@ export default function App() {
                   >
                     <View style={styles.focusMeasureTextBlock}>
                       <Text style={styles.focusMeasureTitle}>
-                        {index + 1}{". "}{item.isVirtual ? "마디 전환 취약 구간" : index === 0 ? "\uAC00\uC7A5 \uB9CE\uC774 \uD2C0\uB9B0 \uAD6C\uAC04" : "\uBC18\uBCF5 \uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04"}
+                        {index + 1}{". "}{item.isVirtual ? "���� ��ȯ ��� ����" : index === 0 ? "\uAC00\uC7A5 \uB9CE\uC774 \uD2C0\uB9B0 \uAD6C\uAC04" : "\uBC18\uBCF5 \uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04"}
                       </Text>
                       <Text style={styles.focusMeasureMeta}>
-                        {formatFocusRangeScrollLabel(item)}{" / "}{item.mistakeCount}{"번 틀림"}{item.errorRate ? ` / 오류율 ${Math.round(item.errorRate * 100)}%` : ""}
+                        {formatFocusRangeScrollLabel(item)}{" / "}{item.mistakeCount}{"�� Ʋ��"}{item.errorRate ? ` / ������ ${Math.round(item.errorRate * 100)}%` : ""}
                       </Text>
                     </View>
                     <View style={styles.focusRangeActions}>
@@ -2684,15 +2738,15 @@ export default function App() {
                   </View>
                 ))
               ) : (
-                <Text style={styles.placeholderText}>{"아직 오류율 30% 이상인 마디나 마디 전환 구간이 없습니다."}</Text>
+                <Text style={styles.placeholderText}>{"���� ������ 30% �̻��� ���� ���� ��ȯ ������ �����ϴ�."}</Text>
               )}
               <View style={styles.customRangeBox}>
                 <Text style={styles.customRangeTitle}>{"\uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04 \uC124\uC815\uD558\uAE30"}</Text>
                 <Text style={styles.sectionHeaderSubtitle}>
-                  {"마디 번호를 입력하지 않고 악보에서 시작 음표와 끝 음표를 눌러 구간을 선택합니다."}
+                  {"���� ��ȣ�� �Է����� �ʰ� �Ǻ����� ���� ��ǥ�� �� ��ǥ�� ���� ������ �����մϴ�."}
                 </Text>
                 <Pressable style={styles.focusMeasureButton} onPress={openRangeSelectionOnScore}>
-                  <Text style={styles.focusMeasureButtonText}>{"악보 보고 구간 선택"}</Text>
+                  <Text style={styles.focusMeasureButtonText}>{"�Ǻ� ���� ���� ����"}</Text>
                 </Pressable>
               </View>
             </>
@@ -2717,6 +2771,12 @@ export default function App() {
       fromMeasure: reviewMeasureFrom,
       toMeasure: reviewMeasureTo,
     });
+    const selectedStartNote = rangeSelectionStartIndex !== null
+      ? notes.find((note) => note.index === rangeSelectionStartIndex)
+      : undefined;
+    const selectedEndNote = rangeSelectionEndIndex !== null
+      ? notes.find((note) => note.index === rangeSelectionEndIndex)
+      : undefined;
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
@@ -2724,9 +2784,9 @@ export default function App() {
             <Text style={styles.backButtonText}>{"\uB4A4\uB85C"}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>{isRangeSelectionMode ? "구간 선택" : "\uCDE8\uC57D \uAD6C\uAC04 \uC545\uBCF4"}</Text>
+            <Text style={styles.title}>{isRangeSelectionMode ? "���� ����" : "\uCDE8\uC57D \uAD6C\uAC04 \uC545\uBCF4"}</Text>
             <Text style={styles.subtitle}>
-              {isRangeSelectionMode ? `${songTitle} - 악보에서 시작/끝 음표 선택` : `${songTitle} - ${reviewScrollLabel}`}
+              {isRangeSelectionMode ? `${songTitle} - �Ǻ����� ����/�� ��ǥ ����` : `${songTitle} - ${reviewScrollLabel}`}
             </Text>
           </View>
           <Pressable style={styles.importButton} onPress={() => setActiveSection("focus")}>
@@ -2775,19 +2835,57 @@ export default function App() {
           {isRangeSelectionMode ? (
             <>
               <View style={styles.statusRow}>
-                <Text style={styles.label}>{"선택"}</Text>
+                <Text style={styles.label}>{"����"}</Text>
                 <Text style={styles.value}>
-                  {rangeSelectionStartMeasure === null
-                    ? "시작할 음표를 누르세요. 누르면 음표 위에 '시작' 표시가 뜹니다."
-                    : `${rangeSelectionStartMeasure}마디의 선택한 음표부터 시작합니다. 끝 음표를 누르세요.`}
+                  {`����: ${
+                    rangeSelectionTarget === "start" ? "���� ����" : rangeSelectionTarget === "end" ? "�� ����" : "���� ��"
+                  }\n����: ${
+                    selectedStartNote ? `${selectedStartNote.measure}���� ${rangeSelectionStartIndex}�� ��ǥ` : "�̼���"
+                  }\n��: ${
+                    selectedEndNote ? `${selectedEndNote.measure}���� ${rangeSelectionEndIndex}�� ��ǥ` : "�̼���"
+                  }`}
                 </Text>
+              </View>
+              <View style={styles.rangeSelectionModeRow}>
+                <Pressable
+                  style={[
+                    styles.rangeSelectionModeButton,
+                    rangeSelectionTarget === "start" && styles.rangeSelectionModeButtonActive,
+                  ]}
+                  onPress={() => setRangeSelectionTarget("start")}
+                >
+                  <Text
+                    style={[
+                      styles.rangeSelectionModeButtonText,
+                      rangeSelectionTarget === "start" && styles.rangeSelectionModeButtonTextActive,
+                    ]}
+                  >
+                    {"���� ����"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.rangeSelectionModeButton,
+                    rangeSelectionTarget === "end" && styles.rangeSelectionModeButtonActive,
+                  ]}
+                  onPress={() => setRangeSelectionTarget("end")}
+                >
+                  <Text
+                    style={[
+                      styles.rangeSelectionModeButtonText,
+                      rangeSelectionTarget === "end" && styles.rangeSelectionModeButtonTextActive,
+                    ]}
+                  >
+                    {"�� ����"}
+                  </Text>
+                </Pressable>
               </View>
               <Pressable
                 style={[styles.analysisButton, !isRangeSelectionReady && styles.disabledButton]}
                 disabled={!isRangeSelectionReady}
                 onPress={() => practiceCustomRange()}
               >
-                <Text style={styles.analysisButtonText}>{"선택 구간 연습하기"}</Text>
+                <Text style={styles.analysisButtonText}>{"���� ���� �����ϱ�"}</Text>
               </Pressable>
             </>
           ) : (
@@ -3164,10 +3262,10 @@ export default function App() {
         </View>
         <View style={styles.practiceHeaderActions}>
           <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongFocusFromPlay}>
-            <Text style={styles.practiceHeaderActionText}>{"취약 부분"}</Text>
+            <Text style={styles.practiceHeaderActionText}>{"��� �κ�"}</Text>
           </Pressable>
           <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongAchievementFromPlay}>
-            <Text style={styles.practiceHeaderActionText}>{"성취도"}</Text>
+            <Text style={styles.practiceHeaderActionText}>{"���뵵"}</Text>
           </Pressable>
         </View>
       </View>
@@ -3230,27 +3328,47 @@ export default function App() {
           {countdown || micStarting ? (
             <View pointerEvents="none" style={styles.practiceCountdownBadge}>
               <Text style={styles.practiceCountdownText}>
-                {countdown ? `${countdown}` : "준비"}
+                {countdown ? `${countdown}` : "�غ�"}
               </Text>
               <Text style={styles.practiceCountdownLabel}>
-                {countdown ? "곧 시작" : "마이크 확인"}
+                {countdown ? "�� ����" : "����ũ Ȯ��"}
               </Text>
             </View>
           ) : null}
         </View>
-        <Pressable
-          style={styles.practiceSideToggle}
-          onPress={() => setShowPracticeSidePanel((current) => !current)}
-        >
-          <Text style={styles.practiceSideToggleIcon}>{showPracticeSidePanel ? ">" : "<"}</Text>
-          <Text style={styles.practiceSideToggleText}>
-            {showPracticeSidePanel ? "닫기" : "패널"}
-          </Text>
-        </Pressable>
+        <View style={styles.practiceSideRail}>
+          <Pressable
+            style={styles.practiceSideToggle}
+            onPress={() => setShowPracticeSidePanel((current) => !current)}
+          >
+            <Text style={styles.practiceSideToggleIcon}>{showPracticeSidePanel ? ">" : "<"}</Text>
+            <Text style={styles.practiceSideToggleText}>
+              {showPracticeSidePanel ? "�ݱ�" : "�г�"}
+            </Text>
+          </Pressable>
+          {!showPracticeSidePanel && !focusPracticeRange && focusPracticeMeasure === null ? (
+            <Pressable
+              style={[
+                styles.practiceCollapsedHighlightButton,
+                showPracticeHighlights && styles.practiceCollapsedHighlightButtonActive,
+              ]}
+              onPress={togglePracticeHighlights}
+            >
+              <Text
+                style={[
+                  styles.practiceCollapsedHighlightText,
+                  showPracticeHighlights && styles.practiceCollapsedHighlightTextActive,
+                ]}
+              >
+                {showPracticeHighlights ? "����" : "ǥ��"}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
         {showPracticeSidePanel ? (
           <View style={styles.practiceSidePanel}>
             <View style={styles.sideBpmControl}>
-              <Text style={styles.bpmLabel}>{"연습 BPM"}</Text>
+              <Text style={styles.bpmLabel}>{"���� BPM"}</Text>
               <Text style={styles.sideBpmValue}>{practiceBpm}</Text>
               <View style={styles.sideBpmButtons}>
                 <Pressable
@@ -3284,13 +3402,13 @@ export default function App() {
               </View>
             </View>
             <View style={styles.sidePracticeInfo}>
-              <Text style={styles.sidePracticeInfoTitle}>{"연습 정보"}</Text>
+              <Text style={styles.sidePracticeInfoTitle}>{"���� ����"}</Text>
               <View style={styles.sidePracticeMetricRow}>
-                <Text style={styles.sidePracticeMetricLabel}>{"정확도"}</Text>
+                <Text style={styles.sidePracticeMetricLabel}>{"��Ȯ��"}</Text>
                 <Text style={styles.sidePracticeMetricValue}>{practiceAccuracyText}</Text>
               </View>
               <View style={styles.sidePracticeMetricRow}>
-                <Text style={styles.sidePracticeMetricLabel}>{"맞은 음표"}</Text>
+                <Text style={styles.sidePracticeMetricLabel}>{"���� ��ǥ"}</Text>
                 <Text style={styles.sidePracticeMetricValue}>{practiceCorrectText}</Text>
               </View>
             </View>
@@ -3304,31 +3422,31 @@ export default function App() {
               >
                 <>
                   <Text style={styles.weakPracticeNoticeTitle}>
-                    {focusRanges.length ? "조심해서 연주할 구간" : "악보 표시"}
+                    {focusRanges.length ? "�����ؼ� ������ ����" : "�Ǻ� ǥ��"}
                   </Text>
                   <Text style={styles.weakPracticeNoticeText}>
-                    {showPracticeHighlights ? "악보에 표시됨\n" : "누르면 악보에 표시됩니다\n"}
+                    {showPracticeHighlights ? "�Ǻ��� ǥ�õ�\n" : "������ �Ǻ��� ǥ�õ˴ϴ�\n"}
                     {focusRanges.length
                       ? focusRanges
                           .slice(0, 3)
                           .map((range) =>
                             `${formatFocusRangeScrollLabel(range)}${
-                              range.isVirtual ? " 전환" : ""
+                              range.isVirtual ? " ��ȯ" : ""
                             }`
                           )
                           .join(" / ")
                       : latestMistakeNoteIndices.length
-                        ? "최근 틀린 음표"
-                        : "표시할 취약 구간 없음"}
+                        ? "�ֱ� Ʋ�� ��ǥ"
+                        : "ǥ���� ��� ���� ����"}
                   </Text>
                   <View style={styles.weakLegendRow}>
                     <View style={[styles.weakLegendDot, styles.weakLegendSoft]} />
-                    <Text style={styles.weakLegendText}>{"취약 부분"}</Text>
+                    <Text style={styles.weakLegendText}>{"��� �κ�"}</Text>
                     <View style={[styles.weakLegendDot, styles.weakLegendStrong]} />
-                    <Text style={styles.weakLegendText}>{"틀린 음"}</Text>
+                    <Text style={styles.weakLegendText}>{"Ʋ�� ��"}</Text>
                   </View>
                   <Text style={styles.sidePracticeNoticeAction}>
-                    {showPracticeHighlights ? "표시 숨기기" : "악보에 표시하기"}
+                    {showPracticeHighlights ? "ǥ�� �����" : "�Ǻ��� ǥ���ϱ�"}
                   </Text>
                 </>
               </Pressable>
@@ -3735,8 +3853,13 @@ const styles = StyleSheet.create({
     width: 180,
     gap: 10,
   },
-  practiceSideToggle: {
+  practiceSideRail: {
     width: 42,
+    gap: 8,
+  },
+  practiceSideToggle: {
+    flex: 1,
+    minHeight: 120,
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
@@ -3756,6 +3879,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 14,
     fontWeight: "900",
+  },
+  practiceCollapsedHighlightButton: {
+    minHeight: 82,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    backgroundColor: "#fff7ea",
+    borderWidth: 1,
+    borderColor: "#d98b24",
+  },
+  practiceCollapsedHighlightButtonActive: {
+    backgroundColor: "#9b5b12",
+    borderColor: "#7d4509",
+  },
+  practiceCollapsedHighlightText: {
+    color: "#7d4509",
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  practiceCollapsedHighlightTextActive: {
+    color: "#ffffff",
   },
   sideBpmControl: {
     borderRadius: 8,
@@ -4739,6 +4886,32 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  rangeSelectionModeRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  rangeSelectionModeButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#b9b19f",
+  },
+  rangeSelectionModeButtonActive: {
+    backgroundColor: "#eef7f2",
+    borderColor: "#1f6f5b",
+  },
+  rangeSelectionModeButtonText: {
+    color: "#66736b",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  rangeSelectionModeButtonTextActive: {
+    color: "#1f6f5b",
+  },
   analysisButton: {
     flex: 1.5,
     minHeight: 52,
@@ -4826,3 +4999,12 @@ const styles = StyleSheet.create({
     color: "#1f2a25",
   },
 });
+
+
+
+
+
+
+
+
+

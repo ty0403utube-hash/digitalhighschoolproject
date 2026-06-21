@@ -13,4 +13,5 @@ export type PracticeNote = {
   beatType: number;
   startMs: number;
   durationMs: number;
+  skipPractice?: boolean;
 };
