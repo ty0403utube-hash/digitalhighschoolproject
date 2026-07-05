@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
+import { Platform, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
 import { OSMD_BUNDLE_BASE64_CHUNKS } from "../webview/osmdBundleBase64";
 import { createOsmdPracticeHtml } from "../webview/osmdPracticeHtml";
@@ -8,6 +9,7 @@ export type ScoreWebViewHandle = {
   setNoteLabel: (index: number, text: string, color?: string) => void;
   setNoteProgress: (index: number, progress: number) => void;
   resetNoteColors: () => void;
+  clearPracticeMarks: () => void;
   scrollToNote: (index: number) => void;
   scrollScorePage: (direction: "prev" | "next") => void;
   startMic: () => void;
@@ -63,15 +65,18 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
     },
     ref
   ) => {
+    const isWebPreview = Platform.OS === "web";
     const webViewRef = useRef<WebView>(null);
     const webViewReadyRef = useRef(false);
 
     const html = useMemo(
       () =>
-        createOsmdPracticeHtml(
-          `data:application/javascript;base64,${OSMD_BUNDLE_BASE64_CHUNKS.join("")}`
-        ),
-      []
+        isWebPreview
+          ? ""
+          : createOsmdPracticeHtml(
+              `data:application/javascript;base64,${OSMD_BUNDLE_BASE64_CHUNKS.join("")}`
+            ),
+      [isWebPreview]
     );
 
     const send = (type: string, payload?: unknown) => {
@@ -91,6 +96,18 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
       }
     }, [musicXml, layoutMode, measureFrom, measureTo, noteIndexOffset, useLowestChordNoteOnly]);
 
+    useEffect(() => {
+      if (!isWebPreview) return;
+      onScoreReady({
+        renderMode: "web-preview",
+        measureFrom,
+        measureTo,
+        noteCount: 0,
+        svgCount: 0,
+      });
+      onScrollInfo({ page: 1, totalPages: 1 });
+    }, [isWebPreview, measureFrom, measureTo, onScoreReady, onScrollInfo]);
+
     useImperativeHandle(ref, () => ({
       setNoteColor(index: number, color: string) {
         send("SET_NOTE_COLOR", { index, color });
@@ -104,6 +121,9 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
       resetNoteColors() {
         send("RESET_NOTE_COLORS");
       },
+      clearPracticeMarks() {
+        send("CLEAR_PRACTICE_MARKS");
+      },
       scrollToNote(index: number) {
         send("SCROLL_TO_NOTE", { index });
       },
@@ -111,12 +131,47 @@ export const ScoreWebView = forwardRef<ScoreWebViewHandle, Props>(
         send("SCROLL_SCORE_PAGE", { direction });
       },
       startMic() {
+        if (isWebPreview) {
+          onMicUnavailable("Score WebView and microphone judgment are not available in the web preview.");
+          return;
+        }
         send("START_MIC");
       },
       resetScore() {
         send("RESET_SCORE");
       },
     }));
+
+    if (isWebPreview) {
+      const titleMatch = musicXml.match(/<work-title>([^<]+)<\/work-title>/);
+      return (
+        <View
+          style={{
+            flex: 1,
+            minHeight: 360,
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            backgroundColor: "#f7faf8",
+          }}
+        >
+          <Text style={{ fontSize: 20, fontWeight: "700", color: "#1f3829", textAlign: "center" }}>
+            {titleMatch?.[1] ?? "MusicXML score"}
+          </Text>
+          <Text
+            style={{
+              marginTop: 10,
+              fontSize: 14,
+              lineHeight: 21,
+              color: "#52645a",
+              textAlign: "center",
+            }}
+          >
+            {"Score WebView and microphone judgment are disabled in the web preview.\nUse the web preview for app flow, then test live pitch judgment in Expo on a device."}
+          </Text>
+        </View>
+      );
+    }
 
     return (
       <WebView

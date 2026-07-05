@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioModule,
   createAudioPlayer,
@@ -92,12 +92,13 @@ const FFT_JUDGMENT = {
 const DEFAULT_PRACTICE_BPM = 80;
 const FIREBASE_AUTH_ENABLED = true;
 const LOCAL_AUTH_USER = {
-  name: "연습자",
+  name: "?�습??,
   email: "local@practice.app",
 };
 const ACCURACY_TEST_SONG_TITLE = "\uC815\uD655\uB3C4 \uD655\uC778 \uACE1";
 const HARMONIC_CORRECTION_FACTORS = [1, 2, 3, 4];
 const GUITAR_SOUNDING_OCTAVE_OFFSET = -12;
+const USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT = true;
 const TUNER_STRINGS = [
   { name: "1번줄 E", midi: 64 },
   { name: "2번줄 B", midi: 59 },
@@ -112,7 +113,7 @@ type NoteFeedback = {
   labelColor: string;
 };
 export default function App() {
-  const SAME_BEAT_MS = 80;
+  const SAME_START_MS = 2;
   const scoreRef = useRef<ScoreWebViewHandle>(null);
   const renderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -170,7 +171,7 @@ export default function App() {
   const [nativeMicLevel, setNativeMicLevel] = useState("--");
   const [analysisStatus, setAnalysisStatus] = useState("\uB9C8\uC774\uD06C \uB300\uAE30 \uC911");
   const [tunerActive, setTunerActive] = useState(false);
-  const [tunerStatus, setTunerStatus] = useState("마이크 대기 중");
+  const [tunerStatus, setTunerStatus] = useState("마이???��?�?);
   const [tunerHz, setTunerHz] = useState<number | null>(null);
   const [tunerClarity, setTunerClarity] = useState<number | null>(null);
   const [selectedTunerStringIndex, setSelectedTunerStringIndex] = useState(0);
@@ -226,15 +227,15 @@ export default function App() {
   const startMicLabel = countdown
     ? `${countdown}\uCD08 \uD6C4 \uC2DC\uC791`
     : micStarting
-      ? "\uC900\uBE44 \uC911..."
+      ? "\uB9C8\uC774\uD06C \uC900\uBE44 \uC911"
       : isListening
-        ? "\uB4E3\uB294 \uC911"
-        : "\uB9C8\uC774\uD06C \uC2DC\uC791";
+        ? "\uC5F0\uC8FC \uB4E3\uB294 \uC911"
+        : "\uC5F0\uC2B5 \uC2DC\uC791";
   const restartButtonLabel = customNoteRange || focusPracticeRange || focusPracticeMeasure !== null
-    ? "\uC2DC\uC791\uD558\uAE30"
+    ? "\uAD6C\uAC04 \uC5F0\uC2B5 \uC2DC\uC791"
     : canResumeFromMistake
-      ? "\uC2DC\uC791\uD558\uAE30"
-      : "\uB179\uC74C \uC2DC\uC791";
+      ? "\uCC98\uC74C\uBD80\uD130 \uB2E4\uC2DC \uC5F0\uC2B5"
+      : "\uCC98\uC74C\uBD80\uD130 \uC5F0\uC2B5";
   const isPracticeRunning = isListening || micStarting || waitingToStart || countdown !== null;
   const notes = useMemo(
     () => parseMusicXml(musicXml, useLowestChordNoteOnly),
@@ -377,7 +378,7 @@ export default function App() {
         setCurrentUser(
           user
             ? {
-                name: user.displayName || user.email?.split("@")[0] || "사용자",
+                name: user.displayName || user.email?.split("@")[0] || "?�용??,
                 email: user.email || "",
               }
             : null
@@ -529,21 +530,21 @@ export default function App() {
   }
   async function submitLogin() {
     if (!FIREBASE_AUTH_ENABLED) {
-      const message = "현재 로그인 기능은 임시로 비활성화되어 있습니다.";
+      const message = "?�재 로그??기능?� ?�시�?비활?�화?�어 ?�습?�다.";
       setAuthError(message);
-      Alert.alert("로그인 비활성화", message);
+      Alert.alert("로그??비활?�화", message);
       return;
     }
 
     const name = loginName.trim();
     if (!name) {
-      setAuthError("이름을 입력해주세요.");
-      Alert.alert("로그인 오류", "이름을 입력해주세요.");
+      setAuthError("?�름???�력?�주?�요.");
+      Alert.alert("로그???�류", "?�름???�력?�주?�요.");
       return;
     }
     if (loginPassword.trim().length < 6) {
-      setAuthError("비밀번호는 6자 이상 입력해주세요.");
-      Alert.alert("로그인 오류", "비밀번호는 6자 이상 입력해주세요.");
+      setAuthError("비�?번호??6???�상 ?�력?�주?�요.");
+      Alert.alert("로그???�류", "비�?번호??6???�상 ?�력?�주?�요.");
       return;
     }
     const email = createFirebaseEmailFromName(name);
@@ -558,7 +559,7 @@ export default function App() {
     } catch (error) {
       const message = getFirebaseAuthErrorMessage(error);
       setAuthError(message);
-      Alert.alert("로그인 오류", message);
+      Alert.alert("로그???�류", message);
     }
   }
   async function logout() {
@@ -568,7 +569,7 @@ export default function App() {
       setCurrentUser(LOCAL_AUTH_USER);
       setActiveSection("home");
       setSelectedAchievementSongId(null);
-      Alert.alert("로그인 비활성화", "현재는 로컬 연습 모드로 실행 중입니다.");
+      Alert.alert("로그??비활?�화", "?�재??로컬 ?�습 모드�??�행 중입?�다.");
       return;
     }
 
@@ -579,7 +580,7 @@ export default function App() {
     } catch (error) {
       const message = getFirebaseAuthErrorMessage(error);
       setAuthError(message);
-      Alert.alert("로그아웃 오류", message);
+      Alert.alert("로그?�웃 ?�류", message);
     }
   }
   function getFirebaseAuthErrorMessage(error: unknown) {
@@ -591,18 +592,18 @@ export default function App() {
       return getFirebaseConfigErrorMessage(error);
     }
     if (message.includes("auth/configuration-not-found")) {
-      return "Firebase Auth 설정이 아직 완료되지 않았습니다. Firebase Console에서 이메일/비밀번호 로그인을 켜고 환경변수를 확인해주세요.";
+      return "Firebase Auth ?�정???�직 ?�료?��? ?�았?�니?? Firebase Console?�서 ?�메??비�?번호 로그?�을 켜고 ?�경변?��? ?�인?�주?�요.";
     }
     if (message.includes("auth/invalid-api-key") || message.includes("apiKey")) {
-      return "Firebase API 키가 비어 있거나 올바르지 않습니다. .env의 EXPO_PUBLIC_FIREBASE_API_KEY 값을 확인해주세요.";
+      return "Firebase API ?��? 비어 ?�거???�바르�? ?�습?�다. .env??EXPO_PUBLIC_FIREBASE_API_KEY 값을 ?�인?�주?�요.";
     }
-    if (message.includes("auth/email-already-in-use")) return "이미 가입된 이름입니다.";
+    if (message.includes("auth/email-already-in-use")) return "?��? 가?�된 ?�름?�니??";
     if (message.includes("auth/invalid-credential") || message.includes("auth/wrong-password")) {
-      return "이름 또는 비밀번호가 올바르지 않습니다.";
+      return "?�름 ?�는 비�?번호가 ?�바르�? ?�습?�다.";
     }
-    if (message.includes("auth/user-not-found")) return "가입되지 않은 이름입니다.";
-    if (message.includes("auth/weak-password")) return "비밀번호가 너무 약합니다. 6자 이상으로 입력해주세요.";
-    if (message.includes("auth/invalid-email")) return "이메일 형식이 올바르지 않습니다.";
+    if (message.includes("auth/user-not-found")) return "가?�되지 ?��? ?�름?�니??";
+    if (message.includes("auth/weak-password")) return "비�?번호가 ?�무 ?�합?�다. 6???�상?�로 ?�력?�주?�요.";
+    if (message.includes("auth/invalid-email")) return "?�메???�식???�바르�? ?�습?�다.";
     return message;
   }
   function createFirebaseEmailFromName(name: string) {
@@ -722,7 +723,7 @@ export default function App() {
 
     Alert.alert(
       "\uAD6C\uAC04 \uCD08\uAE30\uD654",
-      `${formatFocusRange(range)}의 저장된 실수 기록만 지울까요?`,
+      `${formatFocusRange(range)}???�?�된 ?�수 기록�?지?�까??`,
       [
         { text: "\uCDE8\uC18C", style: "cancel" },
         {
@@ -911,7 +912,12 @@ export default function App() {
       sessionSavedRef.current = false;
       setResultSummary("\uCC98\uC74C\uBD80\uD130 \uC5F0\uC2B5 \uC911");
       scoreRef.current?.resetScore();
-      setTimeout(applyWeakScoreHighlights, 0);
+      if (showPracticeHighlights) {
+        setTimeout(() => {
+          applyWeakScoreHighlights(true);
+          applyLatestMistakeHighlights(true);
+        }, 0);
+      }
     } else {
       setResultSummary("\uC774\uC5B4\uC11C \uC5F0\uC2B5 \uC911");
     }
@@ -935,6 +941,11 @@ export default function App() {
       return firstIndex >= 0 ? firstIndex : 0;
     }
     return 0;
+  }
+  function findNextPracticeEventIndexFrom(startIndex: number) {
+    const boundedStart = Math.max(0, Math.min(notes.length - 1, startIndex));
+    const nextIndex = notes.findIndex((note, index) => index >= boundedStart && !note.skipPractice);
+    return nextIndex >= 0 ? nextIndex : boundedStart;
   }
   async function stopAnalysis(options?: { saveSession?: boolean }) {
     if (options?.saveSession && !sessionSavedRef.current && (isListeningRef.current || sessionMistakesRef.current.length > 0)) {
@@ -973,7 +984,12 @@ export default function App() {
   }
   function beginCurrentNote() {
     stopNoteTimer();
-    const note = notes[currentIndexRef.current];
+    const practiceIndex = findNextPracticeEventIndexFrom(currentIndexRef.current);
+    if (practiceIndex !== currentIndexRef.current) {
+      currentIndexRef.current = practiceIndex;
+      setCurrentIndex(practiceIndex);
+    }
+    const note = notes[practiceIndex];
     if (!note) return;
     matchedRef.current = false;
     noteStartedAtRef.current = Date.now();
@@ -998,30 +1014,23 @@ export default function App() {
         scoreRef.current?.setNoteLabel(targetNote.index, "\uC27C", "#1565c0");
       }
     }
-    setAnalysisStatus(note.isRest ? "\uC27C\uD45C \uC9C0\uB098\uAC00\uB294 \uC911" : `${targetNotes.map(formatNoteName).join("/")} \uC5F0\uC8FC`);
+    const judgmentNotes = getJudgmentNotesAtSameStart(note);
+    setAnalysisStatus(note.isRest ? "\uC27C\uD45C \uC9C0\uB098\uAC00\uB294 \uC911" : `${judgmentNotes.map(formatNoteName).join("/")} \uC5F0\uC8FC`);
     noteTimerRef.current = setInterval(() => {
       const activeNote = notes[currentIndexRef.current];
       if (!activeNote) return;
       const elapsed = Date.now() - noteStartedAtRef.current;
       const activeEventDurationMs = getEventDurationMs(activeNote);
       for (const targetNote of getNotesAtSameStart(activeNote)) {
-        const progress = elapsed / scaleDurationForPractice(targetNote, targetNote.durationMs);
+        const progress = elapsed / activeEventDurationMs;
         scoreRef.current?.setNoteProgress(targetNote.index, progress);
       }
       if (activeNote.isRest && elapsed >= activeEventDurationMs) {
         passCurrentNote();
         return;
       }
-      if (matchedRef.current && elapsed >= activeEventDurationMs) {
-        passCurrentNote();
-        return;
-      }
-      if (!matchedRef.current && elapsed >= activeEventDurationMs + getMissGraceMs(activeEventDurationMs)) {
-        if (matchedRef.current) {
-          passCurrentNote();
-        } else {
-          failCurrentNote();
-        }
+      if (elapsed >= activeEventDurationMs) {
+        matchedRef.current ? passCurrentNote() : failCurrentNote();
       }
     }, 50);
   }
@@ -1042,13 +1051,21 @@ export default function App() {
       return nextBpm;
     });
   }
-  function getPracticeTimeScale(note: Pick<PracticeNote, "bpm">) {
-    const activePracticeBpm = clampPracticeBpm(practiceBpmRef.current);
-    const sourceBpm = Number.isFinite(note.bpm) && note.bpm > 0 ? note.bpm : activePracticeBpm;
-    return sourceBpm / activePracticeBpm;
+  function getBeatUnitQuarterLength(beatType: number) {
+    const safeBeatType = Number.isFinite(beatType) && beatType > 0 ? beatType : 4;
+    return 4 / safeBeatType;
   }
-  function scaleDurationForPractice(note: Pick<PracticeNote, "bpm">, durationMs: number) {
-    return Math.max(40, durationMs * getPracticeTimeScale(note));
+  function getNoteDurationForPractice(
+    note: Pick<PracticeNote, "durationDivisions" | "divisions" | "beatType">
+  ) {
+    const activePracticeBpm = clampPracticeBpm(practiceBpmRef.current);
+    const safeDivisions = Number.isFinite(note.divisions) && note.divisions > 0 ? note.divisions : 1;
+    const safeDurationDivisions = Number.isFinite(note.durationDivisions)
+      ? note.durationDivisions
+      : 0;
+    const quarterCount = safeDurationDivisions / safeDivisions;
+    const beatCount = quarterCount / getBeatUnitQuarterLength(note.beatType);
+    return Math.max(40, beatCount * (60000 / activePracticeBpm));
   }
   function getAttackWindowMs(durationMs: number) {
     return Math.min(
@@ -1075,7 +1092,7 @@ export default function App() {
     if (!isListeningRef.current || currentIndexRef.current !== noteIndex || matchedRef.current) return;
     const activeNote = notes[noteIndex];
     if (!activeNote) return;
-    const candidateNotes = getNotesAtSameStart(activeNote);
+    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
     const samples = attackPitchSamplesRef.current.filter(
       (sample) => sample.clarity >= PITCH_JUDGMENT.minAttackClarity
     );
@@ -1101,41 +1118,63 @@ export default function App() {
       setLastPlayedMidi(
         `${bestSample.match.result.playedMidi} (${Math.round(bestSample.match.result.cents)} cents)`
       );
-      setAnalysisStatus(`Attack matched ${formatNoteName(bestSample.match.note)}`);
+      setAnalysisStatus(`${formatNoteName(bestSample.match.note)} 감�?`);
       setDiagnosticStatus(
-        `어택 OK / ${bestSample.sample.elapsedMs}ms / ${Math.round(bestSample.match.result.cents)} cents / ${Math.round(matchRatio * 100)}%`
+        `?�택 OK / ${bestSample.sample.elapsedMs}ms / ${Math.round(bestSample.match.result.cents)} cents / ${Math.round(matchRatio * 100)}%`
       );
+      setMatchedEventFeedback(bestSample.match.note, "OK");
     }
   }
   function getNextIndexAfterSameStart(note: NonNullable<typeof currentNote>) {
     const nextEventIndex = findNextEventIndex(note);
     return nextEventIndex >= 0 ? nextEventIndex : notes.length;
   }
+  function isRepeatBoundary(note: NonNullable<typeof currentNote>, nextIndex: number) {
+    const nextNote = notes[nextIndex];
+    return Boolean(nextNote && nextNote.measure < note.measure);
+  }
+  async function prepareNewRepeatPass() {
+    await saveCurrentPracticeSession();
+    sessionMistakesRef.current = [];
+    sessionAttemptedEventKeysRef.current = new Set();
+    noteFeedbackRef.current = new Map();
+    sessionSavedRef.current = false;
+    await startPerformanceRecording();
+    scoreRef.current?.resetScore();
+    setScoreViewVersion((version) => version + 1);
+    setResultSummary("?�돌?�표 ?�후 ???�습 �?);
+  }
+  function scheduleNextPracticeNote(delayMs: number) {
+    setTimeout(() => {
+      if (isListeningRef.current) {
+        beginCurrentNote();
+      }
+    }, delayMs);
+  }
+  async function continueToNextPracticeEvent(
+    note: NonNullable<typeof currentNote>,
+    nextIndex: number,
+    status: string
+  ) {
+    const crossedRepeat = isRepeatBoundary(note, nextIndex);
+    if (crossedRepeat) {
+      await prepareNewRepeatPass();
+    }
+    currentIndexRef.current = nextIndex;
+    setCurrentIndex(nextIndex);
+    setCanResumeFromMistake(false);
+    setAnalysisStatus(crossedRepeat ? "?�돌?�표 ?�후 ???�보" : status);
+    scheduleNextPracticeNote(crossedRepeat ? 450 : 0);
+  }
   function getEventDurationMs(note: NonNullable<typeof currentNote>) {
     const groupNotes = getNotesAtSameStart(note);
-    const nextIndex = findNextEventIndex(note);
-    const nextNote = nextIndex >= 0 ? notes[nextIndex] : undefined;
-
-    if (nextNote && nextNote.startMs > note.startMs + SAME_BEAT_MS) {
-      return Math.max(80, scaleDurationForPractice(note, nextNote.startMs - note.startMs));
-    }
-
-    return Math.min(
-      ...groupNotes.map((groupNote) => scaleDurationForPractice(groupNote, groupNote.durationMs))
-    );
+    const timingNotes = groupNotes.filter((groupNote) => !groupNote.skipPractice);
+    const durationNotes = timingNotes.length ? timingNotes : groupNotes;
+    return Math.min(...durationNotes.map((groupNote) => getNoteDurationForPractice(groupNote)));
   }
   function findNextEventIndex(note: NonNullable<typeof currentNote>) {
     return notes.findIndex(
-      (candidate) => candidate.startMs > note.startMs + SAME_BEAT_MS
-    );
-  }
-  function getDelayToNextEvent(note: NonNullable<typeof currentNote>, nextIndex: number) {
-    const nextNote = notes[nextIndex];
-    if (!nextNote) return 0;
-
-    return Math.max(
-      0,
-      scaleDurationForPractice(note, nextNote.startMs - note.startMs) - getEventDurationMs(note)
+      (candidate) => !candidate.skipPractice && candidate.startMs > note.startMs + SAME_START_MS
     );
   }
   function shouldFinishFocusPractice(nextIndex: number) {
@@ -1151,67 +1190,39 @@ export default function App() {
     return !nextNote || nextNote.measure !== focusPracticeMeasure;
   }
   function getPracticeEventKey(note: NonNullable<typeof currentNote>) {
-    return `${note.measure}:${Math.round(note.startMs / SAME_BEAT_MS)}`;
+    return `${note.measure}:${Math.round(note.startMs)}`;
   }
   function markPracticeEventAttempted(note: NonNullable<typeof currentNote>) {
-    if (getNotesAtSameStart(note).every((groupNote) => groupNote.isRest)) return;
+    const judgmentNotes = getJudgmentNotesAtSameStart(note);
+    if (judgmentNotes.every((groupNote) => groupNote.isRest || groupNote.skipPractice)) return;
     sessionAttemptedEventKeysRef.current.add(getPracticeEventKey(note));
   }
-  function passCurrentNote() {
+  function finishCurrentEvent(matched: boolean) {
     stopNoteTimer();
     const note = notes[currentIndexRef.current];
     if (!note) return;
     const groupNotes = getNotesAtSameStart(note);
     markPracticeEventAttempted(note);
-    for (const groupNote of groupNotes) {
-      setNoteFeedback(groupNote.index, {
-        noteColor: "#2e7d32",
-        label: groupNote.isRest ? "\uC27C" : "OK",
-        labelColor: "#2e7d32",
-      });
-    }
-    const nextIndex = getNextIndexAfterSameStart(note);
-    if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
-      const isFocusedPractice = customNoteRange || focusPracticeRange || focusPracticeMeasure !== null;
-      currentIndexRef.current = notes.length - 1;
-      setCurrentIndex(Math.min(nextIndex, notes.length - 1));
-      setIsListening(false);
-      setCanResumeFromMistake(false);
-      setAnalysisStatus(isFocusedPractice ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC" : "\uC644\uB8CC");
-      void saveCurrentPracticeSession();
-      return;
-    }
-    currentIndexRef.current = nextIndex;
-    setCurrentIndex(nextIndex);
-    setAnalysisStatus("\uC815\uD655");
-    const restDelayMs = getDelayToNextEvent(note, nextIndex);
-    setTimeout(() => {
-      if (isListeningRef.current) {
-        beginCurrentNote();
+    if (matched) {
+      setMatchedEventFeedback(note, "OK");
+    } else {
+      const diagnostic = getFailDiagnostic(note);
+      for (const groupNote of groupNotes) {
+        setNoteFeedback(groupNote.index, {
+          noteColor: "#e53935",
+          label: getScoreDiagnosticLabel(diagnostic),
+          labelColor: "#c62828",
+        });
       }
-    }, restDelayMs);
-  }
-  function failCurrentNote() {
-    stopNoteTimer();
-    const note = notes[currentIndexRef.current];
-    if (!note) return;
-    const groupNotes = getNotesAtSameStart(note);
-    markPracticeEventAttempted(note);
-    const diagnostic = getFailDiagnostic(note);
-    for (const groupNote of groupNotes) {
-      setNoteFeedback(groupNote.index, {
-        noteColor: "#e53935",
-        label: getScoreDiagnosticLabel(diagnostic),
-        labelColor: "#c62828",
-      });
+      setDiagnosticStatus(diagnostic);
+      const bestPitch = currentNoteBestPitchRef.current;
+      const mistakeNote = groupNotes.find((groupNote) => !groupNote.skipPractice) ?? groupNotes[0] ?? note;
+      recordMistake(
+        mistakeNote,
+        bestPitch ? "wrong_pitch" : "timeout",
+        bestPitch ? Math.round(hzToMidi(bestPitch.hz)) : null
+      );
     }
-    setDiagnosticStatus(diagnostic);
-    const bestPitch = currentNoteBestPitchRef.current;
-    recordMistake(
-      note,
-      bestPitch ? "wrong_pitch" : "timeout",
-      bestPitch ? Math.round(hzToMidi(bestPitch.hz)) : null
-    );
     const nextIndex = getNextIndexAfterSameStart(note);
     if (nextIndex >= notes.length || shouldFinishFocusPractice(nextIndex)) {
       const isFocusedPractice = customNoteRange || focusPracticeRange || focusPracticeMeasure !== null;
@@ -1220,21 +1231,26 @@ export default function App() {
       setIsListening(false);
       setCanResumeFromMistake(false);
       setAnalysisStatus(
-        isFocusedPractice ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC" : "\uC2E4\uC218 \uD3EC\uD568 \uC644\uB8CC"
+        isFocusedPractice
+          ? "\uC9D1\uC911 \uC5F0\uC2B5 \uC644\uB8CC"
+          : matched
+            ? "\uC644\uB8CC"
+            : "\uC2E4\uC218 \uD3EC\uD568 \uC644\uB8CC"
       );
       void saveCurrentPracticeSession();
       return;
     }
-    currentIndexRef.current = nextIndex;
-    setCurrentIndex(nextIndex);
-    setCanResumeFromMistake(false);
-    setAnalysisStatus("\uB193\uCE68 - \uACC4\uC18D \uC9C4\uD589");
-    const restDelayMs = getDelayToNextEvent(note, nextIndex);
-    setTimeout(() => {
-      if (isListeningRef.current) {
-        beginCurrentNote();
-      }
-    }, restDelayMs);
+    void continueToNextPracticeEvent(
+      note,
+      nextIndex,
+      matched ? "\uC815\uD655" : "\uB193\uCE68 - \uACC4\uC18D \uC9C4\uD589"
+    );
+  }
+  function passCurrentNote() {
+    finishCurrentEvent(true);
+  }
+  function failCurrentNote() {
+    finishCurrentEvent(false);
   }
   function handlePitch(payload: { hz: number; clarity: number; rms?: number; isAttack?: boolean }) {
     receivedPitchRef.current = true;
@@ -1260,11 +1276,11 @@ export default function App() {
     const reading = getTunerReading(payload.hz, selectedTunerString);
     const absCents = Math.abs(reading.cents);
     if (absCents <= 8) {
-      setTunerStatus("정확합니다");
+      setTunerStatus("?�확?�니??);
     } else if (reading.cents < 0) {
-      setTunerStatus("낮습니다. 줄을 조이세요");
+      setTunerStatus("??��?�다. 줄을 조이?�요");
     } else {
-      setTunerStatus("높습니다. 줄을 푸세요");
+      setTunerStatus("?�습?�다. 줄을 ?�세??);
     }
   }
   function getTunerReading(hz: number, stringInfo = selectedTunerString) {
@@ -1279,14 +1295,14 @@ export default function App() {
     };
   }
   async function startTuner() {
-    setTunerStatus("마이크 시작 중...");
+    setTunerStatus("마이???�작 �?..");
     setTunerActive(true);
     await requestNativeMicrophonePermission();
     scoreRef.current?.startMic();
   }
   function stopTuner() {
     setTunerActive(false);
-    setTunerStatus("마이크 대기 중");
+    setTunerStatus("마이???��?�?);
   }
   function handleFftPitchClasses(payload: {
     pitchClasses: number[];
@@ -1298,14 +1314,14 @@ export default function App() {
     if (!isListening || !activeNote || activeNote.isRest || !payload.pitchClasses.length) {
       return;
     }
-    const candidateNotes = getNotesAtSameStart(activeNote);
+    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
     const strongestPeak = payload.peaks[0];
     if (!strongestPeak || strongestPeak.db < FFT_JUDGMENT.minPeakDb) {
       return;
     }
     const elapsedMs = Date.now() - noteStartedAtRef.current;
     if (!noteAttackSeenRef.current && elapsedMs > ATTACK_JUDGMENT.guitarAttackRequiredAfterMs) {
-      setDiagnosticStatus(`지속음 제외 / ${elapsedMs}ms / 기타 어택 없음`);
+      setDiagnosticStatus(`지?�음 ?�외 / ${elapsedMs}ms / 기�? ?�택 ?�음`);
       return;
     }
     const matchedCandidate = candidateNotes.find((note) => {
@@ -1317,16 +1333,12 @@ export default function App() {
       setLastPlayedMidi(
         fftMatch.peak ? `FFT ${fftMatch.peak.hz} Hz / ${fftMatch.peak.db} dB` : "FFT matched"
       );
-      setAnalysisStatus(`FFT matched ${formatNoteName(fftMatch.note)}`);
+      setAnalysisStatus(`${formatNoteName(fftMatch.note)} 감�?`);
       setDiagnosticStatus(
         `FFT \uBCF4\uC870 \uAC10\uC9C0 / ${Date.now() - noteStartedAtRef.current}ms / ${fftMatch.peak.db} dB / ${Math.round(fftMatch.result.cents)} cents`
       );
-      setNoteFeedback(fftMatch.note.index, {
-        noteColor: "#2e7d32",
-        label: "FFT OK",
-        labelColor: "#2e7d32",
-      });
       matchedRef.current = true;
+      setMatchedEventFeedback(fftMatch.note, "FFT OK");
     }
   }
   function matchPitchForNote(
@@ -1336,7 +1348,7 @@ export default function App() {
     if (payload.clarity < PITCH_JUDGMENT.minDirectClarity) {
       return;
     }
-    const candidateNotes = getNotesAtSameStart(activeNote);
+    const candidateNotes = getJudgmentNotesAtSameStart(activeNote);
     const closestMatch = getClosestPitchMatch(payload.hz, candidateNotes);
     const result = closestMatch.result;
     const elapsedMs = Date.now() - noteStartedAtRef.current;
@@ -1353,22 +1365,18 @@ export default function App() {
     );
     if (result.matched) {
       if (!isLikelyGuitarAttackForCurrentNote(payload, elapsedMs)) {
-        setAnalysisStatus("기타 어택 대기 중");
-        setDiagnosticStatus(`지속음 제외 / ${elapsedMs}ms / 기타 어택 없음`);
+        setAnalysisStatus("기�? ?�택 ?��?�?);
+        setDiagnosticStatus(`지?�음 ?�외 / ${elapsedMs}ms / 기�? ?�택 ?�음`);
         return;
       }
-      setAnalysisStatus(`Matched ${formatNoteName(closestMatch.note)}`);
+      setAnalysisStatus(`${formatNoteName(closestMatch.note)} 감�?`);
       setDiagnosticStatus(
         `\uC74C OK / ${elapsedMs}ms / ${Math.round(result.cents)} cents`
       );
-      setNoteFeedback(closestMatch.note.index, {
-        noteColor: "#2e7d32",
-        label: "OK",
-        labelColor: "#2e7d32",
-      });
       matchedRef.current = true;
+      setMatchedEventFeedback(closestMatch.note, "OK");
     } else {
-      setAnalysisStatus(`Listening for ${candidateNotes.map(formatNoteName).join("/")}`);
+      setAnalysisStatus(`${candidateNotes.map(formatNoteName).join("/")} ?��?�?);
       setDiagnosticStatus(
         `\uC74C \uB2E4\uB984 / ${elapsedMs}ms / ${Math.round(result.cents)} cents`
       );
@@ -1409,7 +1417,7 @@ export default function App() {
       return `\uD53C\uCE58 \uAC10\uC9C0 \uC5C6\uC74C / ${elapsed}ms / \uD5C8\uC6A9 ${allowedMs}ms`;
     }
     const pitchElapsed = Math.max(0, payload.receivedAt - noteStartedAtRef.current);
-    const candidateNotes = getNotesAtSameStart(note);
+    const candidateNotes = getJudgmentNotesAtSameStart(note);
     const closestMatch = getClosestPitchMatch(payload.hz, candidateNotes);
     const cents = Math.round(closestMatch.result.cents);
     if (pitchElapsed > allowedMs) {
@@ -1433,6 +1441,26 @@ export default function App() {
     scoreRef.current?.setNoteColor(index, feedback.noteColor);
     scoreRef.current?.setNoteLabel(index, feedback.label, feedback.labelColor);
   }
+  function setMatchedEventFeedback(note: NonNullable<typeof currentNote>, label: string) {
+    for (const groupNote of getNotesAtSameStart(note)) {
+      setNoteFeedback(groupNote.index, {
+        noteColor: "#2e7d32",
+        label: groupNote.isRest ? "\uC27C" : label,
+        labelColor: "#2e7d32",
+      });
+    }
+  }
+  function restoreScoreColorsAfterLayoutChange() {
+    for (const delayMs of [80, 300, 700]) {
+      setTimeout(() => {
+        reapplyNoteFeedback();
+      }, delayMs);
+    }
+  }
+  function togglePracticeSidePanel() {
+    setShowPracticeSidePanel((current) => !current);
+    restoreScoreColorsAfterLayoutChange();
+  }
   function togglePracticeHighlights() {
     if (showPracticeHighlights) {
       setShowPracticeHighlights(false);
@@ -1441,7 +1469,10 @@ export default function App() {
       return;
     }
     setShowPracticeHighlights(true);
-    setTimeout(() => applyWeakScoreHighlights(true), 0);
+    setTimeout(() => {
+      applyWeakScoreHighlights(true);
+      applyLatestMistakeHighlights(true);
+    }, 0);
   }
   function applyWeakScoreHighlights(force = false) {
     if (!force && !showPracticeHighlights) return;
@@ -1468,11 +1499,7 @@ export default function App() {
   function applyLatestMistakeHighlights(force = false) {
     if (!force && !showPracticeHighlights) return;
     if (focusPracticeRange || focusPracticeMeasure !== null) return;
-    const weakNoteIndices = new Set(
-      focusRanges.flatMap((range) => range.highlightNoteIndices ?? [])
-    );
     for (const index of latestMistakeNoteIndices) {
-      if (weakNoteIndices.size && !weakNoteIndices.has(index)) continue;
       scoreRef.current?.setNoteColor(index, "#c2410c");
       scoreRef.current?.setNoteLabel(index, "");
     }
@@ -1539,13 +1566,25 @@ export default function App() {
   }
   function getNotesAtSameStart(note: NonNullable<typeof currentNote>) {
     const sameStartNotes = notes.filter(
-      (candidate) => Math.abs(candidate.startMs - note.startMs) < SAME_BEAT_MS
+      (candidate) => !candidate.skipPractice && Math.abs(candidate.startMs - note.startMs) <= SAME_START_MS
     );
     if (note.isRest) {
       return sameStartNotes.filter((candidate) => candidate.isRest);
     }
     const playableNotes = sameStartNotes.filter((candidate) => !candidate.isRest);
     return playableNotes.length ? playableNotes : sameStartNotes;
+  }
+  function getJudgmentNotesAtSameStart(note: NonNullable<typeof currentNote>) {
+    const playableNotes = getNotesAtSameStart(note).filter(
+      (candidate) => !candidate.isRest && !candidate.skipPractice
+    );
+    if (!playableNotes.length) return getNotesAtSameStart(note);
+    if (!USE_HIGHEST_CHORD_NOTE_FOR_JUDGMENT || playableNotes.length === 1) return playableNotes;
+    return [
+      playableNotes.reduce((highest, candidate) =>
+        candidate.midi > highest.midi ? candidate : highest
+      ),
+    ];
   }
   function formatNoteName(note: NonNullable<typeof currentNote>) {
     if (note.isRest) return "\uC27C\uD45C";
@@ -1700,7 +1739,7 @@ export default function App() {
       : "\uC5C6\uC74C";
   }
   function getNoteBasedFocusInsights(nextSongId: string, noteSource: PracticeNote[]) {
-    const playableNotes = noteSource.filter((note) => !note.isRest);
+    const playableNotes = noteSource.filter((note) => !note.isRest && !note.skipPractice);
     const sessionIds = getRecentPracticeSessionIdsForSong(nextSongId, 3);
     const sessionCount = Math.max(1, sessionIds.length);
     const recentMistakes = getRecentFocusMistakesForSong(nextSongId, sessionIds);
@@ -1960,10 +1999,10 @@ export default function App() {
       setIsRangeSelectionReady(false);
       setCustomRangeStart(String(measure));
       setCustomRangeEnd(String(measure));
-      setAnalysisStatus(`${formatNoteName(pressedNote)} 시작 선택됨. 끝 음표를 악보에서 한 번 더 누르세요.`);
+      setAnalysisStatus(`${formatNoteName(pressedNote)} ?�작 ?�택?? ???�표�??�보?�서 ??�????�르?�요.`);
       markSelectedNoteRangePreview(payload.index, payload.index);
       scoreRef.current?.setNoteColor(payload.index, "#ef8a24");
-      scoreRef.current?.setNoteLabel(payload.index, "시작", "#ef8a24");
+      scoreRef.current?.setNoteLabel(payload.index, "?�작", "#ef8a24");
       return;
     }
 
@@ -1978,7 +2017,7 @@ export default function App() {
     setRangeSelectionStartMeasure(null);
     setRangeSelectionStartIndex(null);
     setIsRangeSelectionReady(true);
-    setAnalysisStatus(`${fromMeasure}마디 ${fromIndex}번 음표부터 ${toMeasure}마디 ${toIndex}번 음표까지 선택됨`);
+    setAnalysisStatus(`${fromMeasure}마디 ${fromIndex}�??�표부??${toMeasure}마디 ${toIndex}�??�표까�? ?�택??);
     setTimeout(() => markSelectedNoteRangePreview(fromIndex, toIndex), 80);
   }
   function practiceWeakRange(range: FocusRange) {
@@ -2039,7 +2078,7 @@ export default function App() {
       setPlayReturnSection("focus");
       setActiveSection("play");
       setAnalysisStatus(
-        `구간 연습: ${firstNote.measure}마디 ${customNoteRange.fromIndex}번 음표-${lastNote.measure}마디 ${customNoteRange.toIndex}번 음표`
+        `구간 ?�습: ${firstNote.measure}마디 ${customNoteRange.fromIndex}�??�표-${lastNote.measure}마디 ${customNoteRange.toIndex}�??�표`
       );
       return;
     }
@@ -2083,14 +2122,6 @@ export default function App() {
     refreshSavedSongs();
     setFocusSelectedSongId(songId);
     setActiveSection("focus");
-  }
-  async function openCurrentSongAchievementFromPlay() {
-    await stopAnalysis({ saveSession: true });
-    refreshPracticeInsights(songId, notes);
-    refreshSavedSongs();
-    setAchievementView("all");
-    setSelectedAchievementSongId(songId);
-    setActiveSection("achievement");
   }
   async function returnFromPlay() {
     await stopAnalysis({ saveSession: true });
@@ -2165,9 +2196,9 @@ export default function App() {
       scoreRef.current?.setNoteColor(note.index, "#f7c982");
     }
     scoreRef.current?.setNoteColor(from, "#ef8a24");
-    scoreRef.current?.setNoteLabel(from, "시작", "#ef8a24");
+    scoreRef.current?.setNoteLabel(from, "?�작", "#ef8a24");
     scoreRef.current?.setNoteColor(to, "#ef8a24");
-    scoreRef.current?.setNoteLabel(to, "끝", "#ef8a24");
+    scoreRef.current?.setNoteLabel(to, "??, "#ef8a24");
   }
   function applyManualScoreTitle() {
     const nextTitle = sanitizeScoreTitle(editableScoreTitle) || "Imported Score";
@@ -2260,7 +2291,7 @@ export default function App() {
   }
   function isProbablyGarbledTitle(title: string) {
     const questionMarks = (title.match(/\?/g) ?? []).length;
-    const suspiciousChars = (title.match(/[熬곭솾?η넭?곕쳜?좑옙]/g) ?? []).length;
+    const suspiciousChars = (title.match(/[?�곭??η??곕쳜?좑옙]/g) ?? []).length;
     return (
       title.includes("\uFFFD") ||
       /\?{3,}/.test(title) ||
@@ -2272,8 +2303,8 @@ export default function App() {
     return (
       <SafeAreaView style={styles.root}>
         <View style={styles.loginScreen}>
-          <Text style={styles.loginTitle}>{"기타 연습"}</Text>
-          <Text style={styles.loginSubtitle}>{"로그인 정보를 확인하는 중입니다"}</Text>
+          <Text style={styles.loginTitle}>{"기�? ?�습"}</Text>
+          <Text style={styles.loginSubtitle}>{"로그???�보�??�인?�는 중입?�다"}</Text>
         </View>
       </SafeAreaView>
     );
@@ -2295,11 +2326,11 @@ export default function App() {
             scrollEnabled
           >
             <View style={styles.loginCard}>
-              <Text style={styles.loginTitle}>{"기타 연습"}</Text>
+              <Text style={styles.loginTitle}>{"기�? ?�습"}</Text>
               <Text style={styles.loginSubtitle}>
                 {loginMode === "login"
-                  ? "이름과 비밀번호로 로그인하고 연습 기록을 이어서 확인하세요"
-                  : "이름과 비밀번호로 계정을 만들고 연습 기록을 관리하세요"}
+                  ? "?�름�?비�?번호�?로그?�하�??�습 기록???�어???�인?�세??
+                  : "?�름�?비�?번호�?계정??만들�??�습 기록??관리하?�요"}
               </Text>
               {authError ? <Text style={styles.loginError}>{authError}</Text> : null}
               <View style={styles.loginModeRow}>
@@ -2313,7 +2344,7 @@ export default function App() {
                       loginMode === "login" && styles.activeLoginModeButtonText,
                     ]}
                   >
-                    {"로그인"}
+                    {"로그??}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -2326,7 +2357,7 @@ export default function App() {
                       loginMode === "signup" && styles.activeLoginModeButtonText,
                     ]}
                   >
-                    {"회원가입"}
+                    {"?�원가??}
                   </Text>
                 </Pressable>
               </View>
@@ -2334,7 +2365,7 @@ export default function App() {
                 style={styles.loginInput}
                 value={loginName}
                 onChangeText={setLoginName}
-                placeholder="이름"
+                placeholder="?�름"
                 placeholderTextColor="#8a938d"
                 autoCorrect={false}
                 returnKeyType="next"
@@ -2343,7 +2374,7 @@ export default function App() {
                 style={styles.loginInput}
                 value={loginPassword}
                 onChangeText={setLoginPassword}
-                placeholder="비밀번호"
+                placeholder="비�?번호"
                 placeholderTextColor="#8a938d"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -2354,11 +2385,11 @@ export default function App() {
               />
               <Pressable style={styles.loginSubmitButton} onPress={submitLogin}>
                 <Text style={styles.loginSubmitButtonText}>
-                  {loginMode === "login" ? "로그인하기" : "회원가입하기"}
+                  {loginMode === "login" ? "로그?�하�? : "?�원가?�하�?}
                 </Text>
               </Pressable>
               <Text style={styles.loginNote}>
-                {"Firebase에는 이름을 바탕으로 만든 내부 계정으로 안전하게 로그인합니다."}
+                {"Firebase?�는 ?�름??바탕?�로 만든 ?��? 계정?�로 ?�전?�게 로그?�합?�다."}
               </Text>
             </View>
           </ScrollView>
@@ -2375,11 +2406,11 @@ export default function App() {
               <View style={styles.homeHeaderTextBlock}>
                 <Text style={styles.homeTitle}>{"\uAE30\uD0C0 \uC5F0\uC2B5"}</Text>
                 <Text style={styles.homeSubtitle}>
-                  {currentUser.name}{"님, 오늘 연습을 시작해볼까요?"}
+                  {currentUser.name}{"?? ?�늘 ?�습???�작?�볼까요?"}
                 </Text>
               </View>
               <Pressable style={styles.logoutButton} onPress={logout}>
-                <Text style={styles.logoutButtonText}>{"로그아웃"}</Text>
+                <Text style={styles.logoutButtonText}>{"로그?�웃"}</Text>
               </Pressable>
             </View>
           </View>
@@ -2389,8 +2420,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>1</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"연주하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"저장된 악보를 선택하고 연습합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"?�주?�기"}</Text>
+                <Text style={styles.categorySubtitle}>{"?�?�된 ?�보�??�택?�고 ?�습?�니??}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("focus")}>
@@ -2398,8 +2429,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>2</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"취약 부분 연습하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"자주 틀린 구간을 다시 연습합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"취약 부�??�습?�기"}</Text>
+                <Text style={styles.categorySubtitle}>{"?�주 ?��?구간???�시 ?�습?�니??}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("achievement")}>
@@ -2407,8 +2438,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>3</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"성취도 확인하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"현재 진행 중인 곡과 완료한 곡을 확인합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"?�취???�인?�기"}</Text>
+                <Text style={styles.categorySubtitle}>{"?�재 진행 중인 곡과 ?�료??곡을 ?�인?�니??}</Text>
               </View>
             </Pressable>
             <Pressable style={styles.categoryButton} onPress={() => setActiveSection("tuner")}>
@@ -2416,8 +2447,8 @@ export default function App() {
                 <Text style={styles.categoryBadgeText}>4</Text>
               </View>
               <View style={styles.categoryTextBlock}>
-                <Text style={styles.categoryTitle}>{"튜닝하기"}</Text>
-                <Text style={styles.categorySubtitle}>{"기타 6현 표준 튜닝에 맞춰 줄을 조율합니다"}</Text>
+                <Text style={styles.categoryTitle}>{"?�닝?�기"}</Text>
+                <Text style={styles.categorySubtitle}>{"기�? 6???��? ?�닝??맞춰 줄을 조율?�니??}</Text>
               </View>
             </Pressable>
           </View>
@@ -2439,7 +2470,7 @@ export default function App() {
             </Text>
           </View>
           <Pressable style={styles.importButton} onPress={importMusicXml}>
-            <Text style={styles.importButtonText}>{"불러오기"}</Text>
+            <Text style={styles.importButtonText}>{"불러?�기"}</Text>
           </Pressable>
         </View>
         <ScrollView style={styles.placeholderPanel} contentContainerStyle={styles.placeholderContent}>
@@ -2483,11 +2514,11 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={returnFromTuner}>
-            <Text style={styles.backButtonText}>{"홈"}</Text>
+            <Text style={styles.backButtonText}>{"??}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>{"튜닝하기"}</Text>
-            <Text style={styles.subtitle}>{"표준 튜닝 E A D G B E"}</Text>
+            <Text style={styles.title}>{"?�닝?�기"}</Text>
+            <Text style={styles.subtitle}>{"?��? ?�닝 E A D G B E"}</Text>
           </View>
         </View>
         <View style={styles.tunerHiddenScore}>
@@ -2505,16 +2536,16 @@ export default function App() {
             onScoreError={(message) => setTunerStatus(message)}
             onNoteMapWarning={() => {}}
             onScrollInfo={() => {}}
-            onMicReady={() => setTunerStatus("줄을 하나씩 튕겨주세요")}
-            onMicUnavailable={(message) => setTunerStatus(`마이크 사용 불가: ${message}`)}
+            onMicReady={() => setTunerStatus("줄을 ?�나???�겨주세??)}
+            onMicUnavailable={(message) => setTunerStatus(`마이???�용 불�?: ${message}`)}
           />
           {countdown || micStarting ? (
             <View style={styles.recordingCountdownBadge}>
               <Text style={styles.recordingCountdownText}>
-                {countdown ? `${countdown}` : "준비"}
+                {countdown ? `${countdown}` : "준�?}
               </Text>
               <Text style={styles.recordingCountdownLabel}>
-                {countdown ? "녹음 시작" : "마이크 확인"}
+                {countdown ? "?�음 ?�작" : "마이???�인"}
               </Text>
             </View>
           ) : null}
@@ -2531,7 +2562,7 @@ export default function App() {
                     setSelectedTunerStringIndex(index);
                     setTunerHz(null);
                     setTunerClarity(null);
-                    setTunerStatus(`${stringInfo.name} 기준으로 맞춰주세요`);
+                    setTunerStatus(`${stringInfo.name} 기�??�로 맞춰주세??);
                   }}
                 >
                   <Text style={[styles.tunerTabNumber, isSelected && styles.tunerTabNumberActive]}>
@@ -2549,7 +2580,7 @@ export default function App() {
             {"목표 "}{midiToHz(selectedTunerString.midi).toFixed(1)}{" Hz"}
           </Text>
           <Text style={styles.tunerHz}>
-            {tunerHz ? `${tunerHz.toFixed(1)} Hz` : "소리를 기다리는 중"}
+            {tunerHz ? `${tunerHz.toFixed(1)} Hz` : "?�리�?기다리는 �?}
           </Text>
           <Text style={styles.tunerStatus}>{tunerStatus}</Text>
           <View style={styles.tunerMeter}>
@@ -2557,9 +2588,9 @@ export default function App() {
             <View style={[styles.tunerNeedle, { left: needleLeft }]} />
           </View>
           <View style={styles.tunerMeterLabels}>
-            <Text style={styles.tunerMeterLabel}>{"낮음"}</Text>
-            <Text style={styles.tunerMeterLabel}>{"정확"}</Text>
-            <Text style={styles.tunerMeterLabel}>{"높음"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"??��"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"?�확"}</Text>
+            <Text style={styles.tunerMeterLabel}>{"?�음"}</Text>
           </View>
           <Text style={styles.tunerCents}>
             {tunerReading ? `${cents > 0 ? "+" : ""}${cents} cents` : "0 cents"}
@@ -2569,10 +2600,10 @@ export default function App() {
             disabled={tunerActive}
             onPress={startTuner}
           >
-            <Text style={styles.tunerStartButtonText}>{tunerActive ? "듣는 중" : "튜닝 시작"}</Text>
+            <Text style={styles.tunerStartButtonText}>{tunerActive ? "?�는 �? : "?�닝 ?�작"}</Text>
           </Pressable>
           <Text style={styles.tunerStringItem}>
-            {"탭에서 줄을 고른 뒤 해당 줄만 튕겨서 맞추세요."}
+            {"??��??줄을 고른 ???�당 줄만 ?�겨??맞추?�요."}
           </Text>
         </View>
       </SafeAreaView>
@@ -2583,12 +2614,12 @@ export default function App() {
       <SafeAreaView style={styles.root}>
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={returnFromFocus}>
-            <Text style={styles.backButtonText}>{focusSelectedSongId ? "목록" : "홈"}</Text>
+            <Text style={styles.backButtonText}>{focusSelectedSongId ? "목록" : "??}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
             <Text style={styles.title}>{"\uCDE8\uC57D \uBD80\uBD84 \uC5F0\uC2B5\uD558\uAE30"}</Text>
             <Text style={styles.subtitle}>
-              {focusSelectedSongId ? songTitle : "먼저 연습할 곡을 선택하세요"}
+              {focusSelectedSongId ? songTitle : "먼�? ?�습??곡을 ?�택?�세??}
             </Text>
           </View>
         </View>
@@ -2596,9 +2627,9 @@ export default function App() {
           {!focusSelectedSongId ? (
             <>
               <View style={styles.focusIntroHeader}>
-                <Text style={styles.placeholderTitle}>{"곡 선택"}</Text>
+                <Text style={styles.placeholderTitle}>{"�??�택"}</Text>
                 <Text style={styles.sectionHeaderSubtitle}>
-                  {"곡을 선택하면 그 곡의 반복 연습 필요 구간만 따로 보여줍니다."}
+                  {"곡을 ?�택?�면 �?곡의 반복 ?�습 ?�요 구간�??�로 보여줍니??"}
                 </Text>
               </View>
               {focusSelectableSongs.length ? (
@@ -2631,7 +2662,7 @@ export default function App() {
                 <View style={styles.focusActionTextBlock}>
                   <Text style={styles.placeholderTitle}>{songTitle}</Text>
                   <Text style={styles.sectionHeaderSubtitle}>
-                    {"최근 연습에서 한 마디의 30% 이상을 틀리거나, 마디 경계의 절반+절반 가상 구간에서 30% 이상 틀리면 표시됩니다."}
+                    {"최근 ?�습?�서 ??마디??30% ?�상???�리거?? 마디 경계???�반+?�반 가??구간?�서 30% ?�상 ?�리면 ?�시?�니??"}
                   </Text>
                 </View>
               </View>
@@ -2644,10 +2675,10 @@ export default function App() {
                   >
                     <View style={styles.focusMeasureTextBlock}>
                       <Text style={styles.focusMeasureTitle}>
-                        {index + 1}{". "}{item.isVirtual ? "마디 전환 취약 구간" : index === 0 ? "\uAC00\uC7A5 \uB9CE\uC774 \uD2C0\uB9B0 \uAD6C\uAC04" : "\uBC18\uBCF5 \uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04"}
+                        {index + 1}{". "}{item.isVirtual ? "마디 ?�환 취약 구간" : index === 0 ? "\uAC00\uC7A5 \uB9CE\uC774 \uD2C0\uB9B0 \uAD6C\uAC04" : "\uBC18\uBCF5 \uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04"}
                       </Text>
                       <Text style={styles.focusMeasureMeta}>
-                        {formatFocusRangeScrollLabel(item)}{" / "}{item.mistakeCount}{"번 틀림"}{item.errorRate ? ` / 오류율 ${Math.round(item.errorRate * 100)}%` : ""}
+                        {formatFocusRangeScrollLabel(item)}{" / "}{item.mistakeCount}{"�??��?}{item.errorRate ? ` / ?�류??${Math.round(item.errorRate * 100)}%` : ""}
                       </Text>
                     </View>
                     <View style={styles.focusRangeActions}>
@@ -2667,15 +2698,15 @@ export default function App() {
                   </View>
                 ))
               ) : (
-                <Text style={styles.placeholderText}>{"아직 오류율 30% 이상인 마디나 마디 전환 구간이 없습니다."}</Text>
+                <Text style={styles.placeholderText}>{"?�직 ?�류??30% ?�상??마디??마디 ?�환 구간???�습?�다."}</Text>
               )}
               <View style={styles.customRangeBox}>
                 <Text style={styles.customRangeTitle}>{"\uC5F0\uC2B5 \uD544\uC694 \uAD6C\uAC04 \uC124\uC815\uD558\uAE30"}</Text>
                 <Text style={styles.sectionHeaderSubtitle}>
-                  {"마디 번호를 입력하지 않고 악보에서 시작 음표와 끝 음표를 눌러 구간을 선택합니다."}
+                  {"마디 번호�??�력?��? ?�고 ?�보?�서 ?�작 ?�표?� ???�표�??�러 구간???�택?�니??"}
                 </Text>
                 <Pressable style={styles.focusMeasureButton} onPress={openRangeSelectionOnScore}>
-                  <Text style={styles.focusMeasureButtonText}>{"악보 보고 구간 선택"}</Text>
+                  <Text style={styles.focusMeasureButtonText}>{"?�보 보고 구간 ?�택"}</Text>
                 </Pressable>
               </View>
             </>
@@ -2707,9 +2738,9 @@ export default function App() {
             <Text style={styles.backButtonText}>{"\uB4A4\uB85C"}</Text>
           </Pressable>
           <View style={styles.titleBlock}>
-            <Text style={styles.title}>{isRangeSelectionMode ? "구간 선택" : "\uCDE8\uC57D \uAD6C\uAC04 \uC545\uBCF4"}</Text>
+            <Text style={styles.title}>{isRangeSelectionMode ? "구간 ?�택" : "\uCDE8\uC57D \uAD6C\uAC04 \uC545\uBCF4"}</Text>
             <Text style={styles.subtitle}>
-              {isRangeSelectionMode ? `${songTitle} - 악보에서 시작/끝 음표 선택` : `${songTitle} - ${reviewScrollLabel}`}
+              {isRangeSelectionMode ? `${songTitle} - ?�보?�서 ?�작/???�표 ?�택` : `${songTitle} - ${reviewScrollLabel}`}
             </Text>
           </View>
           <Pressable style={styles.importButton} onPress={() => setActiveSection("focus")}>
@@ -2758,11 +2789,11 @@ export default function App() {
           {isRangeSelectionMode ? (
             <>
               <View style={styles.statusRow}>
-                <Text style={styles.label}>{"선택"}</Text>
+                <Text style={styles.label}>{"?�택"}</Text>
                 <Text style={styles.value}>
                   {rangeSelectionStartMeasure === null
-                    ? "시작할 음표를 누르세요. 누르면 음표 위에 '시작' 표시가 뜹니다."
-                    : `${rangeSelectionStartMeasure}마디의 선택한 음표부터 시작합니다. 끝 음표를 누르세요.`}
+                    ? "?�작???�표�??�르?�요. ?�르�??�표 ?�에 '?�작' ?�시가 ?�니??"
+                    : `${rangeSelectionStartMeasure}마디???�택???�표부???�작?�니?? ???�표�??�르?�요.`}
                 </Text>
               </View>
               <Pressable
@@ -2770,7 +2801,7 @@ export default function App() {
                 disabled={!isRangeSelectionReady}
                 onPress={() => practiceCustomRange()}
               >
-                <Text style={styles.analysisButtonText}>{"선택 구간 연습하기"}</Text>
+                <Text style={styles.analysisButtonText}>{"?�택 구간 ?�습?�기"}</Text>
               </Pressable>
             </>
           ) : (
@@ -3147,10 +3178,7 @@ export default function App() {
         </View>
         <View style={styles.practiceHeaderActions}>
           <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongFocusFromPlay}>
-            <Text style={styles.practiceHeaderActionText}>{"취약 부분"}</Text>
-          </Pressable>
-          <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongAchievementFromPlay}>
-            <Text style={styles.practiceHeaderActionText}>{"성취도"}</Text>
+            <Text style={styles.practiceHeaderActionText}>{"취약 부�?}</Text>
           </Pressable>
         </View>
       </View>
@@ -3213,27 +3241,27 @@ export default function App() {
           {countdown || micStarting ? (
             <View pointerEvents="none" style={styles.practiceCountdownBadge}>
               <Text style={styles.practiceCountdownText}>
-                {countdown ? `${countdown}` : "준비"}
+                {countdown ? `${countdown}` : "준�?}
               </Text>
               <Text style={styles.practiceCountdownLabel}>
-                {countdown ? "곧 시작" : "마이크 확인"}
+                {countdown ? "�??�작" : "마이???�인"}
               </Text>
             </View>
           ) : null}
         </View>
         <Pressable
           style={styles.practiceSideToggle}
-          onPress={() => setShowPracticeSidePanel((current) => !current)}
+          onPress={togglePracticeSidePanel}
         >
           <Text style={styles.practiceSideToggleIcon}>{showPracticeSidePanel ? ">" : "<"}</Text>
           <Text style={styles.practiceSideToggleText}>
-            {showPracticeSidePanel ? "닫기" : "패널"}
+            {showPracticeSidePanel ? "?�기" : "?�널"}
           </Text>
         </Pressable>
         {showPracticeSidePanel ? (
           <View style={styles.practiceSidePanel}>
             <View style={styles.sideBpmControl}>
-              <Text style={styles.bpmLabel}>{"연습 BPM"}</Text>
+              <Text style={styles.bpmLabel}>{"?�습 BPM"}</Text>
               <Text style={styles.sideBpmValue}>{practiceBpm}</Text>
               <View style={styles.sideBpmButtons}>
                 <Pressable
@@ -3267,13 +3295,13 @@ export default function App() {
               </View>
             </View>
             <View style={styles.sidePracticeInfo}>
-              <Text style={styles.sidePracticeInfoTitle}>{"연습 정보"}</Text>
+              <Text style={styles.sidePracticeInfoTitle}>{"?�습 ?�보"}</Text>
               <View style={styles.sidePracticeMetricRow}>
-                <Text style={styles.sidePracticeMetricLabel}>{"정확도"}</Text>
+                <Text style={styles.sidePracticeMetricLabel}>{"?�확??}</Text>
                 <Text style={styles.sidePracticeMetricValue}>{practiceAccuracyText}</Text>
               </View>
               <View style={styles.sidePracticeMetricRow}>
-                <Text style={styles.sidePracticeMetricLabel}>{"맞은 음표"}</Text>
+                <Text style={styles.sidePracticeMetricLabel}>{"맞�? ?�표"}</Text>
                 <Text style={styles.sidePracticeMetricValue}>{practiceCorrectText}</Text>
               </View>
             </View>
@@ -3287,31 +3315,31 @@ export default function App() {
               >
                 <>
                   <Text style={styles.weakPracticeNoticeTitle}>
-                    {focusRanges.length ? "조심해서 연주할 구간" : "악보 표시"}
+                    {focusRanges.length ? "조심?�서 ?�주??구간" : "?�보 ?�시"}
                   </Text>
                   <Text style={styles.weakPracticeNoticeText}>
-                    {showPracticeHighlights ? "악보에 표시됨\n" : "누르면 악보에 표시됩니다\n"}
+                    {showPracticeHighlights ? "?�보???�시??n" : "?�르�??�보???�시?�니??n"}
                     {focusRanges.length
                       ? focusRanges
                           .slice(0, 3)
                           .map((range) =>
                             `${formatFocusRangeScrollLabel(range)}${
-                              range.isVirtual ? " 전환" : ""
+                              range.isVirtual ? " ?�환" : ""
                             }`
                           )
                           .join(" / ")
                       : latestMistakeNoteIndices.length
-                        ? "최근 틀린 음표"
-                        : "표시할 취약 구간 없음"}
+                        ? "최근 ?��??�표"
+                        : "?�시??취약 구간 ?�음"}
                   </Text>
                   <View style={styles.weakLegendRow}>
                     <View style={[styles.weakLegendDot, styles.weakLegendSoft]} />
-                    <Text style={styles.weakLegendText}>{"취약 부분"}</Text>
+                    <Text style={styles.weakLegendText}>{"취약 부�?}</Text>
                     <View style={[styles.weakLegendDot, styles.weakLegendStrong]} />
-                    <Text style={styles.weakLegendText}>{"틀린 음"}</Text>
+                    <Text style={styles.weakLegendText}>{"?��???}</Text>
                   </View>
                   <Text style={styles.sidePracticeNoticeAction}>
-                    {showPracticeHighlights ? "표시 숨기기" : "악보에 표시하기"}
+                    {showPracticeHighlights ? "?�시 ?�기�? : "?�보???�시?�기"}
                   </Text>
                 </>
               </Pressable>
@@ -3339,10 +3367,10 @@ export default function App() {
             disabled={!canResumeFromMistake || isPracticeRunning}
             onPress={() => startAnalysis("resume")}
           >
-            <Text style={styles.resumeButtonText}>{"\uC774\uC5B4\uC11C"}</Text>
+            <Text style={styles.resumeButtonText}>{"\uD2C0\uB9B0 \uACF3\uBD80\uD130 \uACC4\uC18D"}</Text>
           </Pressable>
           <Pressable style={styles.stopButton} onPress={() => stopAnalysis()}>
-            <Text style={styles.stopButtonText}>{"\uC815\uC9C0"}</Text>
+            <Text style={styles.stopButtonText}>{"\uC5F0\uC2B5 \uC815\uC9C0"}</Text>
           </Pressable>
         </View>
         </View>

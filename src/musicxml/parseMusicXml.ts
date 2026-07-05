@@ -196,7 +196,10 @@ function readTempoFromDirection(directionNode: OrderedXmlNode, fallback: number)
 function readDuration(node: OrderedXmlNode, divisions: number, bpm: number) {
   const rawDurationDivisions = Number(childText(node, "duration") ?? 0);
   const notationDurationDivisions = getNotationDurationDivisions(node, divisions);
-  const durationDivisions = notationDurationDivisions ?? rawDurationDivisions;
+  const durationDivisions =
+    Number.isFinite(rawDurationDivisions) && rawDurationDivisions > 0
+      ? rawDurationDivisions
+      : notationDurationDivisions ?? 0;
 
   return {
     durationDivisions,
@@ -226,11 +229,7 @@ function readPitch(noteNode: OrderedXmlNode) {
 function isPullOffContinuation(noteNode: OrderedXmlNode) {
   if (firstChild(noteNode, "grace")) return true;
 
-  const pullOffs = descendantsNamed(noteNode, "pull-off");
-  return pullOffs.some((pullOff) => {
-    const type = String(attrValue(pullOff, "type") ?? "").toLowerCase();
-    return !type || type === "stop";
-  });
+  return descendantsNamed(noteNode, "pull-off").length > 0;
 }
 
 function repeatDirection(measureNode: OrderedXmlNode, direction: "forward" | "backward") {
@@ -411,6 +410,8 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
       );
       const pitch = readPitch(child);
       const shouldSkipPracticeEvent = isPullOffContinuation(child);
+      const practiceDurationDivisions = shouldSkipPracticeEvent ? 0 : durationDivisions;
+      const practiceDurationMs = shouldSkipPracticeEvent ? 0 : durationMs;
 
       if (pitch) {
         const candidate: PracticeNoteDraft = {
@@ -421,13 +422,13 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
           alter: pitch.alter,
           octave: pitch.octave,
           midi: pitch.midi,
-          durationDivisions,
+          durationDivisions: practiceDurationDivisions,
           divisions,
           bpm,
           beats,
           beatType,
           startMs: quantizeMusicTime(measureStartMs + noteStartMs, divisions, bpm),
-          durationMs,
+          durationMs: practiceDurationMs,
         };
         if (useLowestChordNoteOnly) {
           const key = String(Math.round(candidate.startMs));
@@ -447,22 +448,24 @@ export function parseMusicXml(xml: string, useLowestChordNoteOnly = false): Prac
           alter: 0,
           octave: 0,
           midi: -1,
-          durationDivisions,
+          durationDivisions: practiceDurationDivisions,
           divisions,
           bpm,
           beats,
           beatType,
           startMs: quantizeMusicTime(measureStartMs + noteStartMs, divisions, bpm),
-          durationMs,
+          durationMs: practiceDurationMs,
         });
       }
 
       if (!isChordTone) {
         lastNoteStartMs = noteStartMs;
         pendingGroupStartMs = noteStartMs;
-        pendingGroupDurationMs = durationMs;
-      } else if (pendingGroupStartMs !== null && pendingGroupDurationMs !== null) {
-        pendingGroupDurationMs = Math.min(pendingGroupDurationMs, durationMs);
+        pendingGroupDurationMs = shouldSkipPracticeEvent ? null : durationMs;
+      } else if (pendingGroupStartMs !== null && !shouldSkipPracticeEvent) {
+        pendingGroupDurationMs = pendingGroupDurationMs === null
+          ? durationMs
+          : Math.min(pendingGroupDurationMs, durationMs);
       }
     }
 

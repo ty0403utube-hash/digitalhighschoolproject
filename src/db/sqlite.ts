@@ -1,6 +1,33 @@
-﻿import * as SQLite from "expo-sqlite";
+import { Platform } from "react-native";
+import * as SQLite from "expo-sqlite";
 
-export const db = SQLite.openDatabaseSync("guitar_practice.db");
+type SyncDatabase = {
+  execSync: (source: string) => void;
+  runSync: (source: string, params?: unknown[]) => void;
+  getFirstSync: <T>(source: string, params?: unknown[]) => T | null;
+  getAllSync: <T>(source: string, params?: unknown[]) => T[];
+  withTransactionSync: (task: () => void) => void;
+};
+
+function createWebPreviewDb(): SyncDatabase {
+  return {
+    execSync() {},
+    runSync() {},
+    getFirstSync() {
+      return null;
+    },
+    getAllSync() {
+      return [];
+    },
+    withTransactionSync(task) {
+      task();
+    },
+  };
+}
+
+export const db: SyncDatabase = Platform.OS === "web"
+  ? createWebPreviewDb()
+  : (SQLite.openDatabaseSync("guitar_practice.db") as unknown as SyncDatabase);
 let activeDbUserId = "local";
 
 function encodeDbUserId(userId: string) {
@@ -107,6 +134,3 @@ export function initDb() {
     // Existing databases already have this column.
   }
 }
-
-
-

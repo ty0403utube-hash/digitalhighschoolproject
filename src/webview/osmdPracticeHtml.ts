@@ -50,8 +50,13 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
   <script>
     let osmd;
     let noteMap = new Map();
+    let noteMetaMap = new Map();
     let noteLabelMap = new Map();
     let originalColors = new Map();
+    let chordVisualMap = new Map();
+    let chordOverlayMap = new Map();
+    let directColoredElements = new Map();
+    let practiceOverlayMap = new Map();
     let micStarted = false;
     let audioContext;
     let analyser;
@@ -194,8 +199,13 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       document.getElementById("error").style.display = "none";
       document.getElementById("score").innerHTML = "";
       noteMap = new Map();
+      noteMetaMap = new Map();
       noteLabelMap = new Map();
       originalColors = new Map();
+      chordVisualMap = new Map();
+      chordOverlayMap = new Map();
+      directColoredElements = new Map();
+      practiceOverlayMap = new Map();
 
       osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("score", {
         backend: "svg",
@@ -228,8 +238,13 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
         installScoreTapHandlers();
       } catch (error) {
         noteMap = new Map();
+        noteMetaMap = new Map();
         noteLabelMap = new Map();
         originalColors = new Map();
+        chordVisualMap = new Map();
+        chordOverlayMap = new Map();
+        directColoredElements = new Map();
+        practiceOverlayMap = new Map();
         send("NOTE_MAP_WARNING", {
           message: error && error.message ? error.message : String(error)
         });
@@ -368,21 +383,61 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       while (!iterator.EndReached) {
         const entries = iterator.CurrentVoiceEntries || [];
         const notesAtTimestamp = [];
+        const noteEntriesAtTimestamp = [];
 
         for (const entry of entries) {
           const notes = entry.Notes || [];
-          if (useLowestChordNoteOnly) {
-            notesAtTimestamp.push(...notes);
-            continue;
-          }
+          notesAtTimestamp.push(...notes);
+          noteEntriesAtTimestamp.push(
+            ...notes.map((note) => ({ note, graphicalNote: osmd.rules.GNote(note) }))
+          );
+        }
 
-          for (const note of notes) {
-            const graphicalNote = osmd.rules.GNote(note);
+        if (!useLowestChordNoteOnly && noteEntriesAtTimestamp.length) {
+          const sortedNoteEntries = noteEntriesAtTimestamp.sort((a, b) => {
+            return getNoteSortValue(a.note) - getNoteSortValue(b.note);
+          });
+          const fallbackGraphicalNote = sortedNoteEntries.find((entry) => {
+            return !isRestSourceNote(entry.note) && entry.graphicalNote;
+          })?.graphicalNote;
+          const mappedEntries = [];
+
+          for (const entry of sortedNoteEntries) {
+            const graphicalNote = entry.graphicalNote || (isRestSourceNote(entry.note) ? null : fallbackGraphicalNote);
             if (graphicalNote) {
-              noteMap.set(String(index), graphicalNote);
+              setMappedNote(index, graphicalNote, entry.note);
               originalColors.set(String(index), "#111111");
               attachNotePressHandler(index, graphicalNote);
-              index += 1;
+              mappedEntries.push({
+                index,
+                graphicalNote,
+                isRest: isRestSourceNote(entry.note),
+                midi: getNoteSortValue(entry.note)
+              });
+            }
+            index += 1;
+          }
+
+          const chordGraphicalNotes = mappedEntries
+            .filter((entry) => !entry.isRest)
+            .map((entry) => entry.graphicalNote)
+            .filter((graphicalNote, visualIndex, list) => graphicalNote && list.indexOf(graphicalNote) === visualIndex);
+          for (const entry of mappedEntries) {
+            if (!entry.isRest && chordGraphicalNotes.length > 1) {
+              chordVisualMap.set(String(entry.index), chordGraphicalNotes);
+            }
+          }
+          const chordOverlayEntries = mappedEntries
+            .filter((entry) => !entry.isRest)
+            .map((entry) => ({
+              graphicalNote: entry.graphicalNote,
+              midi: entry.midi
+            }));
+          if (chordOverlayEntries.length > 1) {
+            for (const entry of mappedEntries) {
+              if (!entry.isRest) {
+                chordOverlayMap.set(String(entry.index), chordOverlayEntries);
+              }
             }
           }
         }
@@ -407,9 +462,11 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
             );
 
           if (graphicalNote) {
-            noteMap.set(String(index), graphicalNote);
+            setMappedNote(index, graphicalNote, selected.note);
             originalColors.set(String(index), "#111111");
             attachNotePressHandler(index, graphicalNote);
+            chordVisualMap.set(String(index), [graphicalNote]);
+            chordOverlayMap.set(String(index), [{ graphicalNote, midi: getNoteSortValue(selected.note) }]);
             index += 1;
           }
         }
@@ -455,7 +512,10 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
           if (graphicalNote && !noteMap.has(targetKey)) {
             noteMap.set(targetKey, graphicalNote);
+            noteMetaMap.set(targetKey, noteMetaMap.get(sourceKey) || { isRest: false });
             originalColors.set(targetKey, originalColors.get(sourceKey) || "#111111");
+            chordVisualMap.set(targetKey, chordVisualMap.get(sourceKey) || [graphicalNote]);
+            chordOverlayMap.set(targetKey, chordOverlayMap.get(sourceKey) || [{ graphicalNote, midi: undefined }]);
           }
 
           timelineIndex += 1;
@@ -765,6 +825,19 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       return -Number.MAX_SAFE_INTEGER;
     }
 
+    function isRestSourceNote(note) {
+      if (!note) return false;
+      if (note.isRestFlag === true || note.IsRestFlag === true) return true;
+      if (note.isRest === true || note.IsRest === true) return true;
+      return !(note.Pitch || note.pitch);
+    }
+
+    function setMappedNote(index, graphicalNote, sourceNote) {
+      const key = String(index);
+      noteMap.set(key, graphicalNote);
+      noteMetaMap.set(key, { isRest: isRestSourceNote(sourceNote) });
+    }
+
     function getNoteSortValue(note) {
       if (Number.isFinite(note.halfTone)) {
         return note.halfTone;
@@ -785,9 +858,8 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
       return octave * 12 + fundamental + accidental;
     }
 
-    function setNoteColor(index, color) {
-      const note = noteMap.get(String(index));
-      if (!note) return;
+    function applyGraphicalNoteColor(note, color) {
+      if (!note || typeof note.setColor !== "function") return;
 
       note.setColor(color, {
         applyToNotehead: true,
@@ -797,6 +869,361 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
         applyToAccidentals: true,
         applyToDots: true
       });
+    }
+
+    function rememberDirectElementColor(element) {
+      if (directColoredElements.has(element)) return;
+      directColoredElements.set(element, {
+        fill: element.getAttribute("fill"),
+        stroke: element.getAttribute("stroke")
+      });
+    }
+
+    function restoreDirectElementColors() {
+      for (const [element, attrs] of directColoredElements.entries()) {
+        if (!element || !element.isConnected) continue;
+        if (attrs.fill === null) {
+          element.removeAttribute("fill");
+        } else {
+          element.setAttribute("fill", attrs.fill);
+        }
+        if (attrs.stroke === null) {
+          element.removeAttribute("stroke");
+        } else {
+          element.setAttribute("stroke", attrs.stroke);
+        }
+      }
+      directColoredElements = new Map();
+    }
+
+    function getLocalChordColorRoot(element, noteBox) {
+      let root = element;
+      let current = element;
+
+      while (
+        current &&
+        current.parentElement &&
+        current.parentElement.tagName &&
+        current.parentElement.tagName.toLowerCase() === "g"
+      ) {
+        const parent = current.parentElement;
+        try {
+          const parentBox = parent.getBBox();
+          const parentCenterX = parentBox.x + parentBox.width / 2;
+          const noteCenterX = noteBox.x + noteBox.width / 2;
+          const localEnough =
+            parentBox.width <= 220 &&
+            parentBox.height <= 230 &&
+            Math.abs(parentCenterX - noteCenterX) <= 80;
+          if (!localEnough) break;
+          root = parent;
+          current = parent;
+        } catch (error) {
+          break;
+        }
+      }
+
+      return root;
+    }
+
+    function applyElementTreeColor(element, color) {
+      if (!element) return;
+      const shapes = element.matches && element.matches("path, ellipse, circle, polygon, polyline, rect")
+        ? [element, ...Array.from(element.querySelectorAll("path, ellipse, circle, polygon, polyline, rect"))]
+        : Array.from(element.querySelectorAll("path, ellipse, circle, polygon, polyline, rect"));
+
+      for (const shape of shapes) {
+        if (shape.closest("[data-practice-label]")) continue;
+        rememberDirectElementColor(shape);
+        shape.setAttribute("fill", color);
+        shape.setAttribute("stroke", color);
+      }
+    }
+
+    function applySvgChordColumnColor(note, color) {
+      const element = getGraphicalNoteElement(note);
+      if (!element || typeof element.getBBox !== "function") return;
+
+      applyElementTreeColor(element, color);
+
+      let box;
+      try {
+        box = element.getBBox();
+      } catch (error) {
+        return;
+      }
+
+      const root = element.ownerSVGElement || getLocalChordColorRoot(element, box);
+
+      const centerX = box.x + box.width / 2;
+      const centerY = box.y + box.height / 2;
+      const shapes = root.querySelectorAll("path, ellipse, circle, polygon, polyline, rect");
+
+      for (const shape of shapes) {
+        if (shape.closest("[data-practice-label]")) continue;
+        if (typeof shape.getBBox !== "function") continue;
+
+        try {
+          const shapeBox = shape.getBBox();
+          if (!Number.isFinite(shapeBox.x) || !Number.isFinite(shapeBox.y)) continue;
+          if (shapeBox.width <= 0 || shapeBox.height <= 0) continue;
+          if (shapeBox.width > 48 || shapeBox.height > 72) continue;
+
+          const shapeCenterX = shapeBox.x + shapeBox.width / 2;
+          const shapeCenterY = shapeBox.y + shapeBox.height / 2;
+          const sameColumn = Math.abs(shapeCenterX - centerX) <= 26;
+          const closeStaff = Math.abs(shapeCenterY - centerY) <= 260;
+          if (!sameColumn || !closeStaff) continue;
+
+          rememberDirectElementColor(shape);
+          shape.setAttribute("fill", color);
+          shape.setAttribute("stroke", color);
+        } catch (error) {
+          // Ignore SVG nodes without stable bounds.
+        }
+      }
+    }
+
+    function getVisualChordNotes(index, note) {
+      const mappedChord = chordVisualMap.get(String(index));
+      if (mappedChord && mappedChord.length) {
+        return mappedChord;
+      }
+
+      const element = getGraphicalNoteElement(note);
+      if (!element || typeof element.getBBox !== "function") return [note].filter(Boolean);
+
+      let box;
+      try {
+        box = element.getBBox();
+      } catch (error) {
+        return [note].filter(Boolean);
+      }
+
+      const svg = element.ownerSVGElement;
+      const centerX = box.x + box.width / 2;
+      const centerY = box.y + box.height / 2;
+      const chordNotes = [];
+      const seen = new Set();
+      const targetMeta = noteMetaMap.get(String(index)) || { isRest: false };
+
+      for (const [candidateIndex, candidate] of noteMap.entries()) {
+        if (!candidate || seen.has(candidate)) continue;
+        const candidateMeta = noteMetaMap.get(candidateIndex) || { isRest: false };
+        if (candidateMeta.isRest !== targetMeta.isRest) continue;
+        const candidateElement = getGraphicalNoteElement(candidate);
+        if (!candidateElement || candidateElement.ownerSVGElement !== svg) continue;
+
+        try {
+          const candidateBox = candidateElement.getBBox();
+          const candidateCenterX = candidateBox.x + candidateBox.width / 2;
+          const candidateCenterY = candidateBox.y + candidateBox.height / 2;
+          const sameColumn = Math.abs(candidateCenterX - centerX) <= 24;
+          const closeStaff = Math.abs(candidateCenterY - centerY) <= 120;
+          if (sameColumn && closeStaff) {
+            seen.add(candidate);
+            chordNotes.push(candidate);
+          }
+        } catch (error) {
+          // Ignore unmeasurable SVG nodes.
+        }
+      }
+
+      if (!seen.has(note)) {
+        chordNotes.push(note);
+      }
+
+      return chordNotes.length ? chordNotes : [note].filter(Boolean);
+    }
+
+    function shouldColorVisualChord(color) {
+      return true;
+    }
+
+    function removePracticeOverlay(index) {
+      const key = String(index);
+      const overlays = practiceOverlayMap.get(key) || [];
+      for (const overlay of overlays) {
+        if (overlay && overlay.parentNode) {
+          overlay.parentNode.removeChild(overlay);
+        }
+      }
+      practiceOverlayMap.delete(key);
+    }
+
+    function getPracticeOverlayColor(color) {
+      const value = String(color || "").trim();
+      if (!value || value.startsWith("url(")) return "#2e7d32";
+      return value;
+    }
+
+    function getElementNoteheadCandidates(element) {
+      if (!element || typeof element.getBBox !== "function") return [];
+      const shapes = element.matches && element.matches("path, ellipse, circle, polygon")
+        ? [element, ...Array.from(element.querySelectorAll("path, ellipse, circle, polygon"))]
+        : Array.from(element.querySelectorAll("path, ellipse, circle, polygon"));
+      const candidates = [];
+      const seen = new Set();
+
+      for (const shape of shapes) {
+        if (shape.closest("[data-practice-label]")) continue;
+        if (shape.closest("[data-practice-overlay]")) continue;
+        if (typeof shape.getBBox !== "function") continue;
+
+        try {
+          const box = shape.getBBox();
+          if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) continue;
+          if (box.width < 3 || box.height < 3) continue;
+          if (box.width > 36 || box.height > 30) continue;
+
+          const ratio = box.width / box.height;
+          if (ratio < 0.45 || ratio > 3.2) continue;
+
+          const key = [
+            Math.round(box.x),
+            Math.round(box.y),
+            Math.round(box.width),
+            Math.round(box.height)
+          ].join(":");
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push({
+            cx: box.x + box.width / 2,
+            cy: box.y + box.height / 2,
+            rx: Math.max(7, Math.min(14, box.width / 2 + 3)),
+            ry: Math.max(6, Math.min(12, box.height / 2 + 3))
+          });
+        } catch (error) {
+          // Ignore SVG nodes without stable bounds.
+        }
+      }
+
+      return candidates.sort((a, b) => b.cy - a.cy);
+    }
+
+    function pickNoteheadCandidate(candidates, entry, visualNotes) {
+      if (!candidates.length) return null;
+
+      const midis = visualNotes
+        .map((item) => Number(item.midi))
+        .filter((midi, index, list) => Number.isFinite(midi) && list.indexOf(midi) === index)
+        .sort((a, b) => a - b);
+
+      const midi = Number(entry.midi);
+      if (midis.length > 1 && Number.isFinite(midi)) {
+        const rank = Math.max(0, midis.indexOf(midi));
+        return candidates[Math.min(rank, candidates.length - 1)];
+      }
+
+      return candidates[0];
+    }
+
+    function getNoteOverlayTargets(index, note) {
+      const overlayEntries = chordOverlayMap.get(String(index));
+      const visualNotes = overlayEntries && overlayEntries.length
+        ? overlayEntries
+        : getVisualChordNotes(index, note).map((visualNote) => ({
+            graphicalNote: visualNote,
+            midi: undefined
+          }));
+      const targets = [];
+      const seen = new Set();
+
+      for (const entry of visualNotes) {
+        const visualNote = entry.graphicalNote || entry;
+        const anchor = getNoteAnchor(visualNote);
+        const element = getGraphicalNoteElement(visualNote);
+        let svg = anchor && anchor.svg;
+        let cx = anchor ? anchor.x : 0;
+        let cy = anchor ? anchor.y : 0;
+        let rx = 8;
+        let ry = 6;
+        const notehead = pickNoteheadCandidate(getElementNoteheadCandidates(element), entry, visualNotes);
+
+        if (notehead) {
+          svg = element.ownerSVGElement || svg;
+          cx = notehead.cx;
+          cy = notehead.cy;
+          rx = notehead.rx;
+          ry = notehead.ry;
+        } else if (element && typeof element.getBBox === "function") {
+          try {
+            const box = element.getBBox();
+            if (Number.isFinite(box.x) && Number.isFinite(box.y) && box.width > 0 && box.height > 0) {
+              svg = element.ownerSVGElement || svg;
+              cx = box.x + box.width / 2;
+              cy = box.y + box.height / 2;
+              rx = Math.max(7, Math.min(14, box.width / 2 + 3));
+              ry = Math.max(6, Math.min(12, box.height / 2 + 3));
+            }
+          } catch (error) {
+            // Fall back to the OSMD anchor.
+          }
+        }
+
+        if (!svg || !Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+        let key = [Math.round(cx), Math.round(cy)].join(":");
+        if (seen.has(key) && Number.isFinite(Number(entry.midi))) {
+          const midiRank = visualNotes
+            .map((item) => Number(item.midi))
+            .filter((midi) => Number.isFinite(midi))
+            .sort((a, b) => a - b)
+            .indexOf(Number(entry.midi));
+          cy -= Math.max(0, midiRank) * 9;
+          key = [Math.round(cx), Math.round(cy)].join(":");
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ svg, cx, cy, rx, ry });
+      }
+
+      return targets;
+    }
+
+    function drawPracticeOverlay(index, color) {
+      removePracticeOverlay(index);
+      const note = noteMap.get(String(index));
+      if (!note) return;
+
+      const overlayColor = getPracticeOverlayColor(color);
+      const overlays = [];
+      for (const item of getNoteOverlayTargets(index, note)) {
+        const marker = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
+        marker.setAttribute("data-practice-overlay", String(index));
+        marker.setAttribute("cx", String(item.cx));
+        marker.setAttribute("cy", String(item.cy));
+        marker.setAttribute("rx", String(item.rx));
+        marker.setAttribute("ry", String(item.ry));
+        marker.setAttribute("fill", overlayColor);
+        marker.setAttribute("fill-opacity", "0.42");
+        marker.setAttribute("stroke", overlayColor);
+        marker.setAttribute("stroke-opacity", "0.95");
+        marker.setAttribute("stroke-width", "2");
+        marker.setAttribute("pointer-events", "none");
+        item.svg.appendChild(marker);
+        overlays.push(marker);
+      }
+
+      practiceOverlayMap.set(String(index), overlays);
+    }
+
+    function clearPracticeOverlays() {
+      for (const key of Array.from(practiceOverlayMap.keys())) {
+        removePracticeOverlay(key);
+      }
+      practiceOverlayMap = new Map();
+    }
+
+    function setNoteColor(index, color) {
+      const note = noteMap.get(String(index));
+      if (!note) return;
+      removePracticeOverlay(index);
+      const visualNotes = getVisualChordNotes(index, note);
+
+      for (const visualNote of visualNotes) {
+        applyGraphicalNoteColor(visualNote, color);
+        applyElementTreeColor(getGraphicalNoteElement(visualNote), color);
+      }
     }
 
     function setNoteLabel(index, text, color) {
@@ -1004,9 +1431,8 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     }
 
     function resetScore() {
-      for (const [index, color] of originalColors.entries()) {
-        setNoteColor(index, color);
-      }
+      restoreDirectElementColors();
+      clearPracticeOverlays();
       for (const [, label] of noteLabelMap.entries()) {
         if (label && label.parentNode) {
           label.parentNode.removeChild(label);
@@ -1016,9 +1442,19 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
     }
 
     function resetNoteColors() {
-      for (const [index, color] of originalColors.entries()) {
-        setNoteColor(index, color);
+      restoreDirectElementColors();
+      clearPracticeOverlays();
+    }
+
+    function clearPracticeMarks() {
+      restoreDirectElementColors();
+      clearPracticeOverlays();
+      for (const [, label] of noteLabelMap.entries()) {
+        if (label && label.parentNode) {
+          label.parentNode.removeChild(label);
+        }
       }
+      noteLabelMap = new Map();
     }
 
     function sendScrollInfo() {
@@ -1388,6 +1824,10 @@ export function createOsmdPracticeHtml(osmdScriptUri: string) {
 
         if (msg.type === "RESET_NOTE_COLORS") {
           resetNoteColors();
+        }
+
+        if (msg.type === "CLEAR_PRACTICE_MARKS") {
+          clearPracticeMarks();
         }
 
         if (msg.type === "SCROLL_SCORE_PAGE") {

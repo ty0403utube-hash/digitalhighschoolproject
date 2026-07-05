@@ -48,6 +48,7 @@ import { pickMusicXmlFile } from "./src/musicxml/filePicker";
 import { parseMusicXml } from "./src/musicxml/parseMusicXml";
 import { hzToMidi, midiToHz } from "./src/musicxml/pitch";
 import { comparePitch } from "./src/practice/comparePitch";
+import { BASIC_GUITAR_PITCH_TEST_XML } from "./src/sample/basicGuitarPitchTest";
 import { SAMPLE_MUSIC_XML } from "./src/sample/sampleMusicXml";
 import { PracticeMistakeDraft } from "./src/types/practice";
 import { PracticeNote } from "./src/types/music";
@@ -74,9 +75,9 @@ const PITCH_JUDGMENT = {
   minAttackClarity: 0.14,
 };
 const TIMING_JUDGMENT = {
-  minMissGraceMs: 240,
-  maxMissGraceMs: 380,
-  missGraceRatio: 0.55,
+  minMissGraceMs: 0,
+  maxMissGraceMs: 0,
+  missGraceRatio: 0,
   pitchGraceBeforeNoteMs: 140,
 };
 const ATTACK_JUDGMENT = {
@@ -118,6 +119,8 @@ export default function App() {
   const renderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const noteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noteEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noteTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attackDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeMeterTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pitchWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -146,6 +149,8 @@ export default function App() {
   const noteFeedbackRef = useRef<Map<number, NoteFeedback>>(new Map());
   const currentIndexRef = useRef(0);
   const isListeningRef = useRef(false);
+  const showPracticeHighlightsRef = useRef(false);
+  const suppressScoreColorsRef = useRef(false);
   const practiceBpmRef = useRef(DEFAULT_PRACTICE_BPM);
   const sessionMistakesRef = useRef<PracticeMistakeDraft[]>([]);
   const sessionAttemptedEventKeysRef = useRef<Set<string>>(new Set());
@@ -232,10 +237,10 @@ export default function App() {
         ? "\uB4E3\uB294 \uC911"
         : "\uB9C8\uC774\uD06C \uC2DC\uC791";
   const restartButtonLabel = customNoteRange || focusPracticeRange || focusPracticeMeasure !== null
-    ? "\uC2DC\uC791\uD558\uAE30"
+    ? "\uC5F0\uC8FC \uC2DC\uC791\uD558\uAE30"
     : canResumeFromMistake
-      ? "\uC2DC\uC791\uD558\uAE30"
-      : "\uB179\uC74C \uC2DC\uC791";
+      ? "\uC5F0\uC8FC \uC2DC\uC791\uD558\uAE30"
+      : "\uC5F0\uC8FC \uC2DC\uC791\uD558\uAE30";
   const isPracticeRunning = isListening || micStarting || waitingToStart || countdown !== null;
   const notes = useMemo(
     () => parseMusicXml(musicXml, useLowestChordNoteOnly),
@@ -449,6 +454,14 @@ export default function App() {
     isListeningRef.current = isListening;
   }, [isListening]);
   useEffect(() => {
+    showPracticeHighlightsRef.current = showPracticeHighlights;
+  }, [showPracticeHighlights]);
+  useEffect(() => {
+    if (activeSection !== "play") return;
+    if (suppressScoreColorsRef.current) return;
+    scheduleScoreColorReapply();
+  }, [showPracticeSidePanel]);
+  useEffect(() => {
     if (activeSection !== "play" || !latestMistakeNoteIndices.length) return;
     const timer = setTimeout(() => {
       applyLatestMistakeHighlights();
@@ -490,6 +503,14 @@ export default function App() {
     if (noteTimerRef.current) {
       clearInterval(noteTimerRef.current);
       noteTimerRef.current = null;
+    }
+    if (noteEndTimerRef.current) {
+      clearTimeout(noteEndTimerRef.current);
+      noteEndTimerRef.current = null;
+    }
+    if (noteTransitionTimerRef.current) {
+      clearTimeout(noteTransitionTimerRef.current);
+      noteTransitionTimerRef.current = null;
     }
     if (attackDecisionTimerRef.current) {
       clearTimeout(attackDecisionTimerRef.current);
@@ -804,6 +825,11 @@ export default function App() {
       }
     }
   }
+  async function openExampleScore() {
+    await loadMusicXml(BASIC_GUITAR_PITCH_TEST_XML, "Basic Guitar Pitch Test", false);
+    setPlayReturnSection("library");
+    setActiveSection("play");
+  }
   async function requestNativeMicrophonePermission() {
     try {
       const currentPermission = await getRecordingPermissionsAsync();
@@ -904,6 +930,9 @@ export default function App() {
     receivedPitchRef.current = false;
     matchedRef.current = false;
     if (mode === "restart") {
+      suppressScoreColorsRef.current = true;
+      showPracticeHighlightsRef.current = false;
+      setShowPracticeHighlights(false);
       await discardPerformanceRecording();
       await startPerformanceRecording();
       sessionMistakesRef.current = [];
@@ -911,12 +940,15 @@ export default function App() {
       noteFeedbackRef.current = new Map();
       sessionSavedRef.current = false;
       setResultSummary("\uCC98\uC74C\uBD80\uD130 \uC5F0\uC2B5 \uC911");
-      scoreRef.current?.resetScore();
-      setTimeout(applyWeakScoreHighlights, 0);
+      setScoreViewVersion((version) => version + 1);
+      scoreRef.current?.clearPracticeMarks();
+      setTimeout(() => scoreRef.current?.clearPracticeMarks(), 80);
+      setTimeout(() => scoreRef.current?.clearPracticeMarks(), 200);
     } else {
+      suppressScoreColorsRef.current = false;
       setResultSummary("\uC774\uC5B4\uC11C \uC5F0\uC2B5 \uC911");
     }
-    scoreRef.current?.startMic();
+    setTimeout(() => scoreRef.current?.startMic(), mode === "restart" ? 350 : 0);
     stopPitchWatchdog();
     pitchWatchdogRef.current = setTimeout(() => {
       if (!receivedPitchRef.current) {
@@ -979,6 +1011,7 @@ export default function App() {
   }
   function beginCurrentNote() {
     stopNoteTimer();
+    suppressScoreColorsRef.current = false;
     const practiceIndex = findNextPracticeEventIndexFrom(currentIndexRef.current);
     if (practiceIndex !== currentIndexRef.current) {
       currentIndexRef.current = practiceIndex;
@@ -1003,11 +1036,8 @@ export default function App() {
       );
     }
     for (const targetNote of targetNotes) {
-      scoreRef.current?.setNoteColor(targetNote.index, "#1565c0");
+      if (targetNote.isRest) continue;
       scoreRef.current?.setNoteProgress(targetNote.index, 0);
-      if (targetNote.isRest) {
-        scoreRef.current?.setNoteLabel(targetNote.index, "\uC27C", "#1565c0");
-      }
     }
     const judgmentNotes = getJudgmentNotesAtSameStart(note);
     setAnalysisStatus(note.isRest ? "\uC27C\uD45C \uC9C0\uB098\uAC00\uB294 \uC911" : `${judgmentNotes.map(formatNoteName).join("/")} \uC5F0\uC8FC`);
@@ -1017,17 +1047,21 @@ export default function App() {
       const elapsed = Date.now() - noteStartedAtRef.current;
       const activeEventDurationMs = getEventDurationMs(activeNote);
       for (const targetNote of getNotesAtSameStart(activeNote)) {
+        if (targetNote.isRest) continue;
         const progress = elapsed / activeEventDurationMs;
         scoreRef.current?.setNoteProgress(targetNote.index, progress);
       }
-      if (activeNote.isRest && elapsed >= activeEventDurationMs) {
+    }, 33);
+    noteEndTimerRef.current = setTimeout(() => {
+      noteEndTimerRef.current = null;
+      const activeNote = notes[currentIndexRef.current];
+      if (!activeNote) return;
+      if (activeNote.isRest) {
         passCurrentNote();
         return;
       }
-      if (elapsed >= activeEventDurationMs) {
-        matchedRef.current ? passCurrentNote() : failCurrentNote();
-      }
-    }, 50);
+      matchedRef.current ? passCurrentNote() : failCurrentNote();
+    }, eventDurationMs);
   }
   function getMissGraceMs(durationMs: number) {
     return Math.min(
@@ -1140,7 +1174,12 @@ export default function App() {
     setResultSummary("도돌이표 이후 새 연습 중");
   }
   function scheduleNextPracticeNote(delayMs: number) {
-    setTimeout(() => {
+    if (noteTransitionTimerRef.current) {
+      clearTimeout(noteTransitionTimerRef.current);
+      noteTransitionTimerRef.current = null;
+    }
+    noteTransitionTimerRef.current = setTimeout(() => {
+      noteTransitionTimerRef.current = null;
       if (isListeningRef.current) {
         beginCurrentNote();
       }
@@ -1200,6 +1239,7 @@ export default function App() {
     } else {
       const diagnostic = getFailDiagnostic(note);
       for (const groupNote of groupNotes) {
+        if (groupNote.isRest) continue;
         setNoteFeedback(groupNote.index, {
           noteColor: "#e53935",
           label: getScoreDiagnosticLabel(diagnostic),
@@ -1427,35 +1467,73 @@ export default function App() {
     if (diagnostic.includes("\uBC15\uC790 \uCC3D")) return "\uBC15\uC790";
     return "\uC2E4\uD328";
   }
+  function isPlayableNoteIndex(index: number) {
+    return notes.some((note) => note.index === index && !note.isRest);
+  }
+  function setPracticeNoteColor(index: number, color: string) {
+    if (!isPlayableNoteIndex(index)) return;
+    scoreRef.current?.setNoteColor(index, color);
+  }
+  function setPracticeNoteLabel(index: number, text: string, color?: string) {
+    if (!isPlayableNoteIndex(index)) return;
+    scoreRef.current?.setNoteLabel(index, text, color);
+  }
   function setNoteFeedback(index: number, feedback: NoteFeedback) {
+    if (!isPlayableNoteIndex(index)) return;
     noteFeedbackRef.current.set(index, feedback);
-    scoreRef.current?.setNoteColor(index, feedback.noteColor);
-    scoreRef.current?.setNoteLabel(index, feedback.label, feedback.labelColor);
+    setPracticeNoteColor(index, feedback.noteColor);
+    setPracticeNoteLabel(index, feedback.label, feedback.labelColor);
   }
   function setMatchedEventFeedback(note: NonNullable<typeof currentNote>, label: string) {
     for (const groupNote of getNotesAtSameStart(note)) {
+      if (groupNote.isRest) continue;
       setNoteFeedback(groupNote.index, {
         noteColor: "#2e7d32",
-        label: groupNote.isRest ? "\uC27C" : label,
+        label,
         labelColor: "#2e7d32",
       });
     }
   }
   function togglePracticeHighlights() {
     if (showPracticeHighlights) {
+      showPracticeHighlightsRef.current = false;
       setShowPracticeHighlights(false);
       scoreRef.current?.resetScore();
       reapplyNoteFeedback({ includePracticeHighlights: false });
       return;
     }
+    showPracticeHighlightsRef.current = true;
     setShowPracticeHighlights(true);
     setTimeout(() => {
       applyWeakScoreHighlights(true);
       applyLatestMistakeHighlights(true);
     }, 0);
   }
+  function togglePracticeSidePanel() {
+    setShowPracticeSidePanel((current) => !current);
+    scheduleScoreColorReapply();
+  }
+  function scheduleScoreColorReapply() {
+    for (const delayMs of [0, 80, 180, 360, 700]) {
+      setTimeout(() => {
+        if (suppressScoreColorsRef.current) return;
+        reapplyNoteFeedback();
+      }, delayMs);
+    }
+  }
+  function applyCurrentPracticeHighlight() {
+    if (suppressScoreColorsRef.current) return;
+    if (!isListeningRef.current) return;
+    const activeNote = notes[currentIndexRef.current];
+    if (!activeNote) return;
+    for (const targetNote of getNotesAtSameStart(activeNote)) {
+      if (targetNote.isRest) continue;
+      scoreRef.current?.setNoteProgress(targetNote.index, 0);
+    }
+  }
   function applyWeakScoreHighlights(force = false) {
-    if (!force && !showPracticeHighlights) return;
+    if (suppressScoreColorsRef.current) return;
+    if (!force && !showPracticeHighlightsRef.current) return;
     if (focusPracticeRange || focusPracticeMeasure !== null) return;
 
     const weakNoteIndices = new Set<number>();
@@ -1470,29 +1548,32 @@ export default function App() {
     }
 
     for (const index of weakNoteIndices) {
-      scoreRef.current?.setNoteColor(index, "#f7c982");
+      setPracticeNoteColor(index, "#f7c982");
     }
     for (const index of mistakeNoteIndices) {
-      scoreRef.current?.setNoteColor(index, "#c62828");
+      setPracticeNoteColor(index, "#c62828");
     }
   }
   function applyLatestMistakeHighlights(force = false) {
-    if (!force && !showPracticeHighlights) return;
+    if (suppressScoreColorsRef.current) return;
+    if (!force && !showPracticeHighlightsRef.current) return;
     if (focusPracticeRange || focusPracticeMeasure !== null) return;
     for (const index of latestMistakeNoteIndices) {
-      scoreRef.current?.setNoteColor(index, "#c2410c");
-      scoreRef.current?.setNoteLabel(index, "");
+      setPracticeNoteColor(index, "#c2410c");
+      setPracticeNoteLabel(index, "");
     }
   }
   function reapplyNoteFeedback(options?: { includePracticeHighlights?: boolean }) {
     setTimeout(() => {
+      if (suppressScoreColorsRef.current) return;
       if (options?.includePracticeHighlights !== false) {
         applyWeakScoreHighlights();
         applyLatestMistakeHighlights();
       }
+      applyCurrentPracticeHighlight();
       for (const [index, feedback] of noteFeedbackRef.current.entries()) {
-        scoreRef.current?.setNoteColor(index, feedback.noteColor);
-        scoreRef.current?.setNoteLabel(index, feedback.label, feedback.labelColor);
+        setPracticeNoteColor(index, feedback.noteColor);
+        setPracticeNoteLabel(index, feedback.label, feedback.labelColor);
       }
     }, 0);
   }
@@ -1979,8 +2060,8 @@ export default function App() {
       setCustomRangeEnd(String(measure));
       setAnalysisStatus(`${formatNoteName(pressedNote)} 시작 선택됨. 끝 음표를 악보에서 한 번 더 누르세요.`);
       markSelectedNoteRangePreview(payload.index, payload.index);
-      scoreRef.current?.setNoteColor(payload.index, "#ef8a24");
-      scoreRef.current?.setNoteLabel(payload.index, "시작", "#ef8a24");
+      setPracticeNoteColor(payload.index, "#ef8a24");
+      setPracticeNoteLabel(payload.index, "시작", "#ef8a24");
       return;
     }
 
@@ -2155,23 +2236,23 @@ export default function App() {
       ? weakMistakeNoteIndices
       : notes.filter((candidate) => candidate.measure === measure).map((note) => note.index);
     for (const note of notes.filter((candidate) => indices.includes(candidate.index))) {
-      scoreRef.current?.setNoteColor(note.index, "#e53935");
+      setPracticeNoteColor(note.index, "#e53935");
     }
   }
   function markWeakRangeOnScore(from: number, to: number) {
     for (const note of notes) {
       if (note.measure < from || note.measure > to) continue;
-      scoreRef.current?.setNoteColor(note.index, "#f7c982");
+      setPracticeNoteColor(note.index, "#f7c982");
     }
 
     for (const note of notes.filter((candidate) => weakMistakeNoteIndices.includes(candidate.index))) {
-      scoreRef.current?.setNoteColor(note.index, "#e53935");
+      setPracticeNoteColor(note.index, "#e53935");
     }
   }
   function markSelectedRangePreview(from: number, to: number) {
     for (const note of notes) {
       if (note.measure < from || note.measure > to) continue;
-      scoreRef.current?.setNoteColor(note.index, "#f7c982");
+      setPracticeNoteColor(note.index, "#f7c982");
     }
   }
   function markSelectedNoteRangePreview(fromIndex: number, toIndex: number) {
@@ -2179,12 +2260,12 @@ export default function App() {
     const to = Math.max(fromIndex, toIndex);
     for (const note of notes) {
       if (note.index < from || note.index > to) continue;
-      scoreRef.current?.setNoteColor(note.index, "#f7c982");
+      setPracticeNoteColor(note.index, "#f7c982");
     }
-    scoreRef.current?.setNoteColor(from, "#ef8a24");
-    scoreRef.current?.setNoteLabel(from, "시작", "#ef8a24");
-    scoreRef.current?.setNoteColor(to, "#ef8a24");
-    scoreRef.current?.setNoteLabel(to, "끝", "#ef8a24");
+    setPracticeNoteColor(from, "#ef8a24");
+    setPracticeNoteLabel(from, "시작", "#ef8a24");
+    setPracticeNoteColor(to, "#ef8a24");
+    setPracticeNoteLabel(to, "끝", "#ef8a24");
   }
   function applyManualScoreTitle() {
     const nextTitle = sanitizeScoreTitle(editableScoreTitle) || "Imported Score";
@@ -2466,6 +2547,13 @@ export default function App() {
               {"MusicXML/MXL\uC744 \uBD88\uB7EC\uC628 \uB4A4 \uC800\uC7A5\uB41C \uC545\uBCF4\uB97C \uB204\uB974\uBA74 \uC5F0\uC2B5\uC774 \uC2DC\uC791\uB429\uB2C8\uB2E4."}
             </Text>
           </View>
+          <View style={styles.sectionHeaderBlock}>
+            <Text style={styles.sectionHeaderTitle}>{"Example Score"}</Text>
+          </View>
+          <Pressable style={styles.samplePracticeButton} onPress={openExampleScore}>
+            <Text style={styles.samplePracticeTitle}>{"Basic Guitar Pitch Test"}</Text>
+            <Text style={styles.samplePracticeSubtitle}>{"4 measures for pitch and beat testing"}</Text>
+          </Pressable>
           <View style={styles.sectionHeaderBlock}>
             <Text style={styles.sectionHeaderTitle}>{"\uC800\uC7A5\uB41C \uC545\uBCF4"}</Text>
           </View>
@@ -3166,9 +3254,6 @@ export default function App() {
           <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongFocusFromPlay}>
             <Text style={styles.practiceHeaderActionText}>{"취약 부분"}</Text>
           </Pressable>
-          <Pressable style={styles.practiceHeaderActionButton} onPress={openCurrentSongAchievementFromPlay}>
-            <Text style={styles.practiceHeaderActionText}>{"성취도"}</Text>
-          </Pressable>
         </View>
       </View>
       <View style={styles.practiceMainRow}>
@@ -3191,10 +3276,13 @@ export default function App() {
                   payload?.svgCount ?? 0
                 } svg, ${payload?.height ?? 0}px, ${payload?.renderMode ?? layoutMode}`
               );
+              if (suppressScoreColorsRef.current) {
+                scoreRef.current?.clearPracticeMarks();
+                return;
+              }
               reapplyNoteFeedback();
               setTimeout(() => {
                 applyLatestMistakeHighlights();
-                scoreRef.current?.setNoteColor(currentIndexRef.current, "#1565c0");
                 scoreRef.current?.scrollToNote(currentIndexRef.current);
               }, 250);
               setTimeout(applyLatestMistakeHighlights, 700);
@@ -3240,7 +3328,7 @@ export default function App() {
         </View>
         <Pressable
           style={styles.practiceSideToggle}
-          onPress={() => setShowPracticeSidePanel((current) => !current)}
+          onPress={togglePracticeSidePanel}
         >
           <Text style={styles.practiceSideToggleIcon}>{showPracticeSidePanel ? ">" : "<"}</Text>
           <Text style={styles.practiceSideToggleText}>
@@ -3356,7 +3444,7 @@ export default function App() {
             disabled={!canResumeFromMistake || isPracticeRunning}
             onPress={() => startAnalysis("resume")}
           >
-            <Text style={styles.resumeButtonText}>{"\uC774\uC5B4\uC11C"}</Text>
+            <Text style={styles.resumeButtonText}>{"\uC911\uB2E8\uD55C \uBD80\uBD84\uBD80\uD130 \uC5F0\uC8FC\uD558\uAE30"}</Text>
           </Pressable>
           <Pressable style={styles.stopButton} onPress={() => stopAnalysis()}>
             <Text style={styles.stopButtonText}>{"\uC815\uC9C0"}</Text>
